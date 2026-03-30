@@ -1,0 +1,169 @@
+name: Holocene DA Reconstruction
+
+on:
+  push:
+    paths:
+      - 'query_params.json'   # not in template; server commits this LAST so all files are present
+  workflow_dispatch:
+    inputs:
+      unique_id:
+        description: 'Unique reconstruction ID'
+        required: true
+        type: string
+      lipd_query_json:
+        description: 'LiPD data query parameters (dispatch pathway)'
+        required: false
+        type: string
+
+jobs:
+  # ── Job 1: Acquire and convert proxy data ─────────────────────────────────
+  # Uploads lipd_legacy.pkl as an artifact so Job 2 can be re-run independently.
+  prepare-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Detect which pathway to use.
+      # Priority order:
+      #   1. query_params.json in repo  — server-committed (push trigger pathway)
+      #   2. lipd_query_json input      — manual workflow_dispatch
+      - name: Detect data acquisition pathway
+        id: pathway
+        run: |
+          if [ -f "query_params.json" ]; then
+            echo "pathway=github_actions" >> $GITHUB_OUTPUT
+            MODE=$(jq -r '.mode' query_params.json)
+            echo "mode=$MODE" >> $GITHUB_OUTPUT
+            echo "Using query_params.json from repo (mode: $MODE)"
+          elif [ -n "${{ inputs.lipd_query_json }}" ]; then
+            echo "pathway=github_actions" >> $GITHUB_OUTPUT
+            echo '${{ inputs.lipd_query_json }}' > query_params.json
+            MODE=$(jq -r '.mode' query_params.json)
+            echo "mode=$MODE" >> $GITHUB_OUTPUT
+            echo "Using lipd_query_json input (mode: $MODE)"
+          else
+            echo "ERROR: No data source found (no query_params.json, no lipd_query_json)"
+            exit 1
+          fi
+
+      # ARCHIVED PATHWAY: Download pickle directly from lipdverse
+      - name: Download archived compilation
+        if: steps.pathway.outputs.mode == 'archived'
+        run: |
+          COMPILATION=$(jq -r '.compilation' query_params.json)
+          VERSION=$(jq -r '.version' query_params.json)
+          PICKLE_URL="https://lipdverse.org/${COMPILATION}/${VERSION}/${COMPILATION}${VERSION}_ts.pkl"
+
+          echo "Downloading archived compilation from: $PICKLE_URL"
+          curl -L -f "$PICKLE_URL" -o lipd_legacy.pkl || {
+            echo "ERROR: Failed to download archived compilation"
+            echo "URL: $PICKLE_URL"
+            exit 1
+          }
+
+          ls -lh lipd_legacy.pkl
+
+      # FILTERED PATHWAY: Run lipdGenerator to produce .lpd files + legacy pickle
+      - name: Generate LiPD data from query
+        if: steps.pathway.outputs.mode == 'filtered'
+        run: |
+          echo "Querying lipdverse and generating LiPD data using lipdGenerator container..."
+          mkdir -p lipd_output
+          docker run --rm \
+            -v $(pwd)/query_params.json:/query_params.json:ro \
+            -v $(pwd)/lipd_output:/output \
+            davidedge/lipd_webapps:lipdGenerator /query_params.json /output pickle
+
+          if [ ! -f lipd_output/lipd_legacy.pkl ]; then
+            echo "ERROR: lipdGenerator did not produce lipd_legacy.pkl"
+            ls -la lipd_output/ || true
+            exit 1
+          fi
+
+          mv lipd_output/lipd_legacy.pkl lipd_legacy.pkl
+          echo "lipd_legacy.pkl ready:"
+          ls -lh lipd_legacy.pkl
+
+      - name: Verify proxy data
+        run: |
+          if [ -f lipd_legacy.pkl ]; then
+            echo "Proxy data ready"
+            ls -lh lipd_legacy.pkl
+          else
+            echo "ERROR: lipd_legacy.pkl not found"
+            exit 1
+          fi
+
+      - name: Upload proxy data artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: holocene-da-proxy-data-${{ github.run_id }}
+          path: lipd_legacy.pkl
+          retention-days: 7
+
+  # ── Job 2: Run Holocene DA reconstruction ──────────────────────────────────
+  # Re-run this job alone (via "Re-run failed jobs") when only config
+  # changes are needed — no need to redo data generation.
+  reconstruct:
+    needs: prepare-data
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download proxy data artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: holocene-da-proxy-data-${{ github.run_id }}
+
+      - name: Pull Docker image
+        run: docker pull davidedge/lipd_webapps:holocene_da
+
+      - name: Create results directory
+        run: mkdir -p ./results
+
+      - name: Run Holocene DA reconstruction
+        run: |
+          echo "Running Holocene DA reconstruction..."
+          echo "Config file:"
+          cat config/user_config.yml
+          echo ""
+          docker run --rm \
+            -v $(pwd)/lipd_legacy.pkl:/proxies/temp12k/Temp12k1_0_2.pkl:ro \
+            -v $(pwd)/config/user_config.yml:/config_default.yml:ro \
+            -v $(pwd)/results:/results \
+            davidedge/lipd_webapps:holocene_da
+
+      - name: Verify reconstruction results
+        run: |
+          if [ -d ./results ] && [ "$(ls -A ./results)" ]; then
+            echo "Reconstruction completed successfully"
+            ls -lh ./results/
+          else
+            echo "ERROR: No reconstruction results generated"
+            exit 1
+          fi
+
+      - name: Upload reconstruction results
+        uses: actions/upload-artifact@v4
+        with:
+          name: holocene-da-reconstruction-${{ github.run_id }}
+          path: ./results/
+          retention-days: 90
+
+      - name: Commit results to repository
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          git add results/
+          git diff --staged --quiet || git commit -m "Add Holocene DA reconstruction results for ${{ github.run_id }}"
+          git push

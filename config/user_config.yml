@@ -1,0 +1,5 @@
+# Placeholder - overwritten by PReSto server on reconstruction submission
+data_dir: //
+exp_name: default
+vars_to_reconstruct:
+  - tas
