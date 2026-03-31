@@ -131,6 +131,47 @@ jobs:
       - name: Create results directory
         run: mkdir -p ./results
 
+      - name: Download pre-processed model data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Read time_resolution from user config
+          TIME_RES=$(python3 -c "import yaml; c=yaml.safe_load(open('config/user_config.yml')); print(c['time_resolution'])")
+          echo "User time_resolution: $TIME_RES"
+
+          RELEASE_REPO="DaveEdge1/presto-holocene_da"
+          RELEASE_TAG="model-data-v1"
+
+          # Check if this resolution is pre-processed
+          AVAILABLE="10 20 50 100 200 500 1000"
+          if echo "$AVAILABLE" | grep -qw "$TIME_RES"; then
+            BEST_RES=$TIME_RES
+          else
+            BEST_RES="none"
+          fi
+
+          mkdir -p models/processed_model_data
+
+          if [ "$BEST_RES" != "none" ]; then
+            for MODEL in hadcm3_regrid trace_regrid; do
+              FILE="${MODEL}.21999-0BP.tas.timeres_${BEST_RES}.nc"
+              echo "Downloading $FILE from release $RELEASE_TAG..."
+              gh release download "$RELEASE_TAG" \
+                --repo "$RELEASE_REPO" \
+                --pattern "$FILE" \
+                --dir models/processed_model_data/
+            done
+            echo "Model data downloaded:"
+            ls -lh models/processed_model_data/
+          else
+            echo "Resolution $TIME_RES is not pre-processed. Downloading original data from Zenodo..."
+            curl -L -o holocene_da_data.zip "https://zenodo.org/records/7407116/files/holocene_da_data.zip?download=1"
+            unzip -q holocene_da_data.zip "models/original_model_data/*" -d .
+            rm holocene_da_data.zip
+            echo "Original model data extracted:"
+            ls -lhR models/
+          fi
+
       - name: Run Holocene DA reconstruction
         run: |
           echo "Running Holocene DA reconstruction..."
@@ -140,6 +181,7 @@ jobs:
           docker run --rm \
             -v $(pwd)/lipd_legacy.pkl:/proxies/temp12k/Temp12k1_0_2.pkl:ro \
             -v $(pwd)/config/user_config.yml:/config_default.yml:ro \
+            -v $(pwd)/models:/models \
             -v $(pwd)/results:/results \
             davidedge/lipd_webapps:holocene_da
 
