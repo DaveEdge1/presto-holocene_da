@@ -1,0 +1,49 @@
+cff-version: 1.2.0
+message: "If you use this reconstruction, please cite the references below."
+title: "The Paleoclimate Reconstruction Storehouse (PReSto) platform"
+type: software
+authors:
+  - family-names: Edge
+    given-names: Dave
+  - family-names: Erb
+    given-names: Michael
+  - family-names: McKay
+    given-names: Nicholas
+  - family-names: Zhu
+    given-names: Feng
+  - family-names: Khider
+    given-names: Deborah
+  - family-names: Emile-Geay
+    given-names: Julien
+  - family-names: Routson
+    given-names: Cody
+doi: 10.5281/zenodo.8274756
+version: alpha-release
+date-released: "2023-08-25"
+url: "https://zenodo.org/record/8274756"
+references:
+  - type: article
+    title: "Reconstructing Holocene temperatures in time and space using paleoclimate data assimilation"
+    authors:
+      - family-names: Erb
+        given-names: M. P.
+      - family-names: McKay
+        given-names: N. P.
+      - family-names: Steiger
+        given-names: N.
+      - family-names: Dee
+        given-names: S.
+      - family-names: Bova
+        given-names: S.
+      - family-names: Zhu
+        given-names: F.
+      - family-names: Emile-Geay
+        given-names: J.
+      - family-names: Hakim
+        given-names: G. J.
+    journal: "Climate of the Past"
+    volume: 18
+    start: 2599
+    end: 2629
+    year: 2022
+    doi: 10.5194/cp-18-2599-2022
