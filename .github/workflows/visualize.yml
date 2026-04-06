@@ -51,8 +51,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read
+      contents: read
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download artifact from reconstruction run
         uses: actions/download-artifact@v4
         with:
@@ -77,6 +81,26 @@ jobs:
           echo ""
           echo "Files after flattening:"
           ls -lh ./recon-data/
+
+      - name: Generate configs.yml for visualization
+        run: |
+          if [ ! -f ./recon-data/configs.yml ] && [ -f config/user_config.yml ]; then
+            echo "Generating configs.yml from user_config.yml..."
+            python3 -c "
+          import yaml
+          with open('config/user_config.yml') as f:
+              flat = yaml.safe_load(f)
+          nested = {'presto_config': {k: {'value': str(v)} for k, v in flat.items()}}
+          with open('recon-data/configs.yml', 'w') as f:
+              yaml.dump(nested, f, default_flow_style=False)
+          "
+            echo "Generated configs.yml:"
+            cat ./recon-data/configs.yml
+          elif [ -f ./recon-data/configs.yml ]; then
+            echo "configs.yml already present in artifact"
+          else
+            echo "WARNING: No config file found, visualization may fail"
+          fi
 
       - name: Re-upload for presto-viz
         uses: actions/upload-artifact@v4
@@ -133,11 +157,5 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
-      - name: Update repository About with Pages URL
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PAGE_URL="${{ steps.deployment.outputs.page_url }}docs/visualizer.html"
-          gh api --method PATCH "repos/${{ github.repository }}" \
-            --field homepage="$PAGE_URL"
-          echo "Repository homepage set to: $PAGE_URL"
+      # Homepage URL is set by the PReSto webhook handler using the user's
+      # OAuth token (GITHUB_TOKEN lacks admin permission to update repo settings).
