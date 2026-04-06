@@ -57,7 +57,7 @@ jobs:
         run: |
           COMPILATION=$(jq -r '.compilation' query_params.json)
           VERSION=$(jq -r '.version' query_params.json)
-          PICKLE_URL="https://lipdverse.org/${COMPILATION}/${VERSION}/${COMPILATION}${VERSION}_ts.pkl"
+          PICKLE_URL="https://lipdverse.org/${COMPILATION}/${VERSION}/${COMPILATION}${VERSION}.pkl"
 
           echo "Downloading archived compilation from: $PICKLE_URL"
           curl -L -f "$PICKLE_URL" -o lipd_legacy.pkl || {
@@ -195,6 +195,19 @@ jobs:
             exit 1
           fi
 
+      - name: Include config for visualization
+        run: |
+          python3 -c "
+          import yaml
+          with open('config/user_config.yml') as f:
+              flat = yaml.safe_load(f)
+          nested = {'presto_config': {k: {'value': str(v)} for k, v in flat.items()}}
+          with open('results/configs.yml', 'w') as f:
+              yaml.dump(nested, f, default_flow_style=False)
+          "
+          echo "Generated configs.yml for visualization:"
+          cat results/configs.yml
+
       - name: Upload reconstruction results
         uses: actions/upload-artifact@v4
         with:
@@ -203,9 +216,17 @@ jobs:
           retention-days: 90
 
       - name: Commit results to repository
+        continue-on-error: true
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
-          git add results/
-          git diff --staged --quiet || git commit -m "Add Holocene DA reconstruction results for ${{ github.run_id }}"
-          git push
+
+          # Only commit files under 100MB (GitHub's limit)
+          find results/ -type f -size -100M | while read f; do git add "$f"; done
+
+          if git diff --staged --quiet; then
+            echo "No files under 100MB to commit (large files are in the artifact)"
+          else
+            git commit -m "Add Holocene DA reconstruction results for ${{ github.run_id }}"
+            git push
+          fi
