@@ -215,17 +215,44 @@ jobs:
           path: ./results/
           retention-days: 90
 
+      - name: Upload large NetCDF files to GitHub Release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # NetCDF outputs typically exceed git's 100MB per-file push limit,
+          # so publish them as Release assets (2GB per-file cap) instead.
+          LARGE_NC=$(find results/ -type f -name "*.nc" -size +100M)
+          if [ -z "$LARGE_NC" ]; then
+            echo "No NetCDF files >100MB to upload as release assets"
+            exit 0
+          fi
+
+          TAG="results-${{ github.run_id }}"
+          TITLE="Reconstruction results ${{ github.run_id }}"
+          NOTES="NetCDF output from Holocene DA reconstruction run [${{ github.run_id }}](../../actions/runs/${{ github.run_id }}). Small artifacts (configs.yml, PNGs) are committed to \`results/\` on \`main\`."
+
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            --notes "$NOTES" \
+            --target "$GITHUB_SHA" \
+            $LARGE_NC
+
+          echo "Uploaded to release $TAG:"
+          echo "$LARGE_NC"
+
       - name: Commit results to repository
         continue-on-error: true
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
 
-          # Only commit files under 100MB (GitHub's limit)
+          # Only commit files under 100MB (GitHub's limit).
+          # Files >100MB (typically NetCDFs) are uploaded to a GitHub Release instead.
           find results/ -type f -size -100M | while read f; do git add "$f"; done
 
           if git diff --staged --quiet; then
-            echo "No files under 100MB to commit (large files are in the artifact)"
+            echo "No files under 100MB to commit (large files are in the release)"
           else
             git commit -m "Add Holocene DA reconstruction results for ${{ github.run_id }}"
             git push
