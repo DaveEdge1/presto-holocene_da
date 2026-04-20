@@ -109,6 +109,52 @@ jobs:
           path: ./recon-data/
           retention-days: 7
 
+  validate:
+    name: Run Validation
+    needs: [find-latest-run, download-artifact]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download reconstruction data artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: recon-data-for-viz-${{ github.run_number }}
+          path: ./recon-data
+
+      - name: Verify reconstruction data
+        run: |
+          echo "Available NetCDF files:"
+          ls -lh ./recon-data/*.nc || echo "No .nc files found"
+
+      - name: Pull Docker image
+        run: docker pull davidedge/lipd_webapps:holocene_da
+
+      - name: Run validation script
+        run: |
+          mkdir -p ./validation
+          docker run --rm \
+            --entrypoint conda \
+            -v $(pwd)/validate_holocene_da.py:/app/validate_holocene_da.py:ro \
+            -v $(pwd)/recon-data:/recons:ro \
+            -v $(pwd)/reference_data:/reference_data:ro \
+            -v $(pwd)/validation:/validation \
+            -e RECON_DIR=/recons \
+            -e VALIDATION_DIR=/validation \
+            -e REFERENCE_DIR=/reference_data \
+            davidedge/lipd_webapps:holocene_da \
+            run --no-capture-output -n python3_da python /app/validate_holocene_da.py
+
+      - name: Upload validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-output-${{ github.run_number }}
+          path: ./validation/
+          retention-days: 30
+
   visualize:
     name: Generate Presto Visualization
     needs: [find-latest-run, download-artifact]
@@ -119,7 +165,8 @@ jobs:
 
   deploy-to-github-pages:
     name: Deploy to GitHub Pages
-    needs: [find-latest-run, visualize]
+    needs: [find-latest-run, visualize, validate]
+    if: always() && needs.visualize.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -130,11 +177,21 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download visualization artifact
         uses: actions/download-artifact@v4
         with:
           name: presto-viz-output-HoloceneDA_Run_${{ needs.find-latest-run.outputs.run_number }}_Reviz_${{ github.run_number }}
           path: ./visualization-output
+
+      - name: Download validation artifact
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: validation-output-${{ github.run_number }}
+          path: ./visualization-output/validation
 
       - name: Prepare Pages content
         run: |
@@ -142,8 +199,133 @@ jobs:
           if [ -d "visualization-output/viz" ]; then
             mv visualization-output/viz visualization-output/docs
           fi
-          echo '<meta http-equiv="refresh" content="0; url=docs/visualizer.html">' > ./visualization-output/index.html
+
+          # Copy icon images (committed to repo) into the deployment
+          mkdir -p ./visualization-output/images
+          cp images/visualization.png images/validation.png ./visualization-output/images/ 2>/dev/null || true
+
+          # Conditionally include the validation tile
+          VALIDATION_TILE=""
+          if [ -f "./visualization-output/validation/index.html" ]; then
+            VALIDATION_TILE='<a class="tile" href="validation/index.html"><img src="images/validation.png" alt="Reconstruction Validation"><span>Reconstruction Validation</span></a>'
+          fi
+
+          # Conditionally include the visualization tile
+          VIZ_TILE=""
+          if [ -f "./visualization-output/docs/visualizer.html" ]; then
+            VIZ_TILE='<a class="tile" href="docs/visualizer.html"><img src="images/visualization.png" alt="Visualize Results"><span>Visualize Results</span></a>'
+          fi
+
+          cat > ./visualization-output/index.html << HTMLEOF
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Holocene DA Reconstruction - PReSto Custom</title>
+            <style>
+              :root {
+                --bg: #f7f8fa;
+                --fg: #1a1a1a;
+                --accent: #2563eb;
+                --tile-bg: #ffffff;
+                --tile-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                --tile-shadow-hover: 0 6px 18px rgba(0,0,0,0.14);
+              }
+              * { box-sizing: border-box; }
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                background: var(--bg);
+                color: var(--fg);
+                margin: 0;
+                min-height: 100vh;
+                display: flex;
+                flex-direction: column;
+              }
+              header {
+                text-align: center;
+                padding: 48px 24px 24px;
+              }
+              header h1 {
+                margin: 0;
+                font-size: 2rem;
+                font-weight: 600;
+                color: var(--fg);
+              }
+              main {
+                flex: 1;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 24px;
+              }
+              .tiles {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 32px;
+                justify-content: center;
+              }
+              .tile {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: flex-start;
+                width: clamp(240px, 32vw, 480px);
+                padding: clamp(20px, 2.5vw, 40px);
+                background: var(--tile-bg);
+                border-radius: 12px;
+                box-shadow: var(--tile-shadow);
+                text-decoration: none;
+                color: var(--fg);
+                transition: transform 0.15s ease, box-shadow 0.15s ease;
+              }
+              .tile:hover {
+                transform: translateY(-3px);
+                box-shadow: var(--tile-shadow-hover);
+              }
+              .tile img {
+                width: 100%;
+                height: clamp(160px, 22vw, 360px);
+                object-fit: contain;
+                margin-bottom: 20px;
+              }
+              .tile span {
+                font-size: clamp(1.1rem, 1.6vw, 1.5rem);
+                font-weight: 500;
+                color: var(--accent);
+                text-align: center;
+              }
+              footer {
+                text-align: center;
+                padding: 32px 24px 40px;
+              }
+              footer img {
+                max-width: 180px;
+                height: auto;
+                opacity: 0.85;
+              }
+            </style>
+          </head>
+          <body>
+            <header>
+              <h1>Holocene DA Reconstruction - PReSto Custom</h1>
+            </header>
+            <main>
+              <div class="tiles">
+                ${VALIDATION_TILE}
+                ${VIZ_TILE}
+              </div>
+            </main>
+            <footer>
+              <img src="docs/assets/logo.png" alt="PReSto logo">
+            </footer>
+          </body>
+          </html>
+          HTMLEOF
+
           ls -lah ./visualization-output/
+          ls -lah ./visualization-output/images/ 2>/dev/null || true
+          ls -lah ./visualization-output/validation/ 2>/dev/null || echo "No validation output"
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
