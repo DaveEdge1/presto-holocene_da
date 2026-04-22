@@ -185,6 +185,9 @@ print(f'  Reconstruction: {len(ages)} age steps ({ages.min()}–{ages.max()} BP)
 print(f'\nScanning references in {REFERENCE_DIR} ...')
 references = []
 for path in sorted(glob.glob(os.path.join(REFERENCE_DIR, '*.csv'))):
+    # Proxy datasets have their own handler below; don't treat as GMST references.
+    if path.endswith('_proxies.csv'):
+        continue
     ref = load_reference(path)
     if ref is not None:
         references.append(ref)
@@ -298,6 +301,8 @@ ages_ref = [0, 1000]
 ind_anom = np.where((ages >= ages_anom[0]) & (ages <= ages_anom[1]))[0]
 ind_ref = np.where((ages >= ages_ref[0]) & (ages <= ages_ref[1]))[0]
 
+tas_change = None
+geo_mean = float('nan')
 if len(ind_anom) > 0 and len(ind_ref) > 0:
     tas_change = np.nanmean(tas_mean[ind_anom, :, :], axis=0) \
         - np.nanmean(tas_mean[ind_ref, :, :], axis=0)
@@ -326,7 +331,190 @@ if len(ind_anom) > 0 and len(ind_ref) > 0:
     plt.close(fig)
 else:
     print('  WARNING: reconstruction does not cover 6ka baseline windows, skipping map')
-    geo_mean = float('nan')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4b. Spatial reference comparison (*_6ka_anomaly.nc in REFERENCE_DIR)
+# ═══════════════════════════════════════════════════════════════════════════
+spatial_results = {}
+if tas_change is not None:
+    sp_paths = sorted(glob.glob(os.path.join(REFERENCE_DIR, '*_6ka_anomaly.nc')))
+    if sp_paths:
+        print('\nScanning spatial references in {} ...'.format(REFERENCE_DIR))
+    for sp_path in sp_paths:
+        sp_name = os.path.splitext(os.path.basename(sp_path))[0].replace('_6ka_anomaly', '')
+        try:
+            sp_ds = xr.open_dataset(sp_path)
+        except Exception as e:
+            print(f'  WARN: could not open {sp_path}: {e}')
+            continue
+        anom_var = list(sp_ds.data_vars)[0]
+        ref_field = sp_ds[anom_var].values
+        ref_lat = sp_ds['lat'].values
+        ref_lon = sp_ds['lon'].values
+
+        # Align longitude convention (recon may be 0-360, ref may be -180..180 or vice versa)
+        recon_lon360 = np.mod(lon, 360)
+        ref_lon360 = np.mod(ref_lon, 360)
+
+        # Nearest-neighbor regrid of reference onto recon grid
+        # (vectorized for speed)
+        lat_idx = np.argmin(np.abs(ref_lat[:, None] - lat[None, :]), axis=0)
+        lon_idx = np.argmin(np.abs(ref_lon360[:, None] - recon_lon360[None, :]), axis=0)
+        ref_on_recon = ref_field[lat_idx[:, None], lon_idx[None, :]]
+
+        # Area-weighted pattern R and RMSE
+        wmat = np.cos(np.deg2rad(lat))[:, np.newaxis] * np.ones_like(tas_change)
+        mask_sp = np.isfinite(tas_change) & np.isfinite(ref_on_recon)
+        if mask_sp.sum() < 100:
+            print(f'  {sp_name}: too few valid grid cells, skipping')
+            sp_ds.close()
+            continue
+        ww = wmat[mask_sp]; ww /= ww.sum()
+        aa = tas_change[mask_sp]; bb = ref_on_recon[mask_sp]
+        a_m = float((aa * ww).sum()); b_m = float((bb * ww).sum())
+        cov = float((ww * (aa - a_m) * (bb - b_m)).sum())
+        va = float((ww * (aa - a_m) ** 2).sum()); vb = float((ww * (bb - b_m) ** 2).sum())
+        sp_r = cov / np.sqrt(va * vb) if va > 0 and vb > 0 else float('nan')
+        sp_rmse = float(np.sqrt((ww * (aa - bb) ** 2).sum()))
+        spatial_results[sp_name] = {'R': float(sp_r), 'RMSE': sp_rmse,
+                                    'recon_geo_mean': geo_mean,
+                                    'ref_geo_mean': b_m}
+        print(f'  {sp_name}: spatial R={sp_r:.4f}, RMSE={sp_rmse:.4f} \u00b0C')
+
+        # 3-panel figure
+        def _panel(ax, data, title, levels, cmap):
+            d_cyc, lon_cyc = cutil.add_cyclic_point(data, coord=lon)
+            cf = ax.contourf(lon_cyc, lat, d_cyc, levels, extend='both', cmap=cmap,
+                             transform=ccrs.PlateCarree())
+            ax.coastlines(linewidth=0.5)
+            ax.gridlines(color='k', linewidth=0.3, linestyle=(0, (1, 5)))
+            ax.set_title(title, fontsize=10)
+            return cf
+
+        diff = tas_change - ref_on_recon
+        lvls_main = np.arange(-1, 1.1, 0.1)
+        d_abs = float(np.nanmax(np.abs(diff)))
+        d_abs = max(d_abs, 0.5)
+        lvls_diff = np.linspace(-d_abs, d_abs, 21)
+
+        fig = plt.figure(figsize=(18, 5))
+        ax1 = plt.subplot(1, 3, 1, projection=ccrs.Robinson()); ax1.set_global()
+        cf1 = _panel(ax1, tas_change, 'Custom Holocene DA\n6 ka anomaly',
+                     lvls_main, 'bwr')
+        ax2 = plt.subplot(1, 3, 2, projection=ccrs.Robinson()); ax2.set_global()
+        _panel(ax2, ref_on_recon, f'{sp_name}\n6 ka anomaly', lvls_main, 'bwr')
+        ax3 = plt.subplot(1, 3, 3, projection=ccrs.Robinson()); ax3.set_global()
+        cf3 = _panel(ax3, diff, f'Custom \u2212 {sp_name}', lvls_diff, 'RdBu_r')
+
+        cb1 = fig.colorbar(cf1, ax=[ax1, ax2], orientation='horizontal',
+                           fraction=0.05, pad=0.05, aspect=40)
+        cb1.set_label('\u0394T (\u00b0C)', fontsize=10)
+        cb3 = fig.colorbar(cf3, ax=ax3, orientation='horizontal',
+                           fraction=0.05, pad=0.05, aspect=20)
+        cb3.set_label('Difference (\u00b0C)', fontsize=10)
+        fig.suptitle(f'6 ka Spatial Anomaly: Custom Holocene DA vs {sp_name}   '
+                     f'(pattern R={sp_r:.3f}, RMSE={sp_rmse:.3f} \u00b0C)', fontsize=12)
+        fig.savefig(os.path.join(VALIDATION_DIR, f'spatial_anomaly_6ka_vs_{sp_name}.png'),
+                    dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        sp_ds.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4c. Proxy-site comparison (*_proxies.csv in REFERENCE_DIR)
+# ═══════════════════════════════════════════════════════════════════════════
+proxy_results = {}
+proxy_plots = {}
+if tas_change is not None:
+    pp_paths = sorted(glob.glob(os.path.join(REFERENCE_DIR, '*_proxies.csv')))
+    if pp_paths:
+        print('\nScanning proxy datasets in {} ...'.format(REFERENCE_DIR))
+    for pp_path in pp_paths:
+        pp_name = os.path.splitext(os.path.basename(pp_path))[0]
+        with open(pp_path, encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        if not rows:
+            print(f'  {pp_name}: empty, skipping')
+            continue
+        lats_p, lons_p, vals_p, archives_p = [], [], [], []
+        for row in rows:
+            try:
+                la = float(row.get('lat', 'nan'))
+                lo = float(row.get('lon', 'nan'))
+                vv = float(row.get('value_6ka', 'nan'))
+            except (ValueError, TypeError):
+                continue
+            if not (np.isfinite(la) and np.isfinite(lo) and np.isfinite(vv)):
+                continue
+            lats_p.append(la); lons_p.append(lo); vals_p.append(vv)
+            archives_p.append((row.get('archive_type') or '').strip() or 'unknown')
+        if len(vals_p) < 5:
+            print(f'  {pp_name}: fewer than 5 usable proxies, skipping')
+            continue
+        lats_p = np.array(lats_p); lons_p = np.array(lons_p)
+        vals_p = np.array(vals_p); archives_p = np.array(archives_p)
+
+        # Sample recon 6 ka anomaly at each proxy (nearest neighbor)
+        recon_lon_is_360 = float(np.nanmax(lon)) > 180
+        plot_lons = lons_p.copy()
+        match_lons = np.mod(lons_p, 360) if recon_lon_is_360 else lons_p
+        recon_at_proxy = np.full(len(vals_p), np.nan)
+        for k in range(len(vals_p)):
+            ilat = int(np.argmin(np.abs(lat - lats_p[k])))
+            ilon = int(np.argmin(np.abs(lon - match_lons[k])))
+            recon_at_proxy[k] = tas_change[ilat, ilon]
+
+        mask_p = np.isfinite(recon_at_proxy) & np.isfinite(vals_p)
+        if mask_p.sum() < 5:
+            print(f'  {pp_name}: no matched proxies, skipping')
+            continue
+        pr_r = pearson_r(recon_at_proxy, vals_p)
+        pr_rmse = float(np.sqrt(np.mean((recon_at_proxy[mask_p] - vals_p[mask_p]) ** 2)))
+        pr_bias = float(np.mean(recon_at_proxy[mask_p] - vals_p[mask_p]))
+        proxy_results[pp_name] = {'N': int(mask_p.sum()), 'R': float(pr_r),
+                                  'RMSE': pr_rmse, 'bias': pr_bias}
+        print(f'  {pp_name}: N={mask_p.sum()}, R={pr_r:.3f}, '
+              f'RMSE={pr_rmse:.3f}, bias={pr_bias:+.3f}')
+
+        # Figure: map with proxy points + scatter
+        fig = plt.figure(figsize=(18, 6))
+        ax1 = plt.subplot(1, 2, 1, projection=ccrs.Robinson()); ax1.set_global()
+        tas_cyc_p, lon_cyc_p = cutil.add_cyclic_point(tas_change, coord=lon)
+        cf = ax1.contourf(lon_cyc_p, lat, tas_cyc_p, np.arange(-1, 1.1, 0.1),
+                          extend='both', cmap='bwr', alpha=0.55,
+                          transform=ccrs.PlateCarree())
+        ax1.coastlines(linewidth=0.5)
+        ax1.scatter(plot_lons, lats_p, c=vals_p, vmin=-1, vmax=1, cmap='bwr',
+                    s=28, edgecolors='black', linewidths=0.4,
+                    transform=ccrs.PlateCarree())
+        cb = fig.colorbar(cf, ax=ax1, orientation='horizontal', fraction=0.05,
+                          pad=0.05, aspect=40)
+        cb.set_label('6 ka \u0394T (\u00b0C)', fontsize=10)
+        ax1.set_title(f'Recon 6 ka anomaly with {pp_name} sites overlaid '
+                      f'(N={int(mask_p.sum())})', fontsize=10)
+
+        ax2 = plt.subplot(1, 2, 2)
+        ax2.scatter(vals_p[mask_p], recon_at_proxy[mask_p], s=20, alpha=0.6,
+                    c='steelblue', edgecolors='black', linewidths=0.2)
+        lim = float(max(np.nanmax(np.abs(vals_p)),
+                        np.nanmax(np.abs(recon_at_proxy[mask_p]))))
+        lim = max(lim, 1.0)
+        ax2.plot([-lim, lim], [-lim, lim], '--', color='gray', alpha=0.7, label='1:1')
+        ax2.axhline(0, color='k', lw=0.4, alpha=0.5)
+        ax2.axvline(0, color='k', lw=0.4, alpha=0.5)
+        ax2.set_xlim(-lim, lim); ax2.set_ylim(-lim, lim)
+        ax2.set_aspect('equal')
+        ax2.set_xlabel('Proxy 6 ka \u0394T (\u00b0C)')
+        ax2.set_ylabel('Recon 6 ka \u0394T at proxy site (\u00b0C)')
+        ax2.set_title(f'Proxy vs Recon   R={pr_r:.3f}, RMSE={pr_rmse:.3f}, '
+                      f'bias={pr_bias:+.3f}')
+        ax2.grid(True, alpha=0.3); ax2.legend(loc='best')
+        fig.savefig(os.path.join(VALIDATION_DIR, f'proxy_comparison_{pp_name}.png'),
+                    dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        proxy_plots[pp_name] = f'proxy_comparison_{pp_name}.png'
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. Save metrics CSV + JSON
@@ -337,17 +525,28 @@ with open(metrics_path, 'w', newline='') as f:
     w.writerow(['metric', 'value'])
     w.writerow(['spatial_anomaly_6ka_geo_mean', f'{geo_mean:.4f}'])
     for ref_name, stats in gmst_results.items():
-        w.writerow([f'{ref_name}_R', f'{stats["R"]:.4f}'])
-        w.writerow([f'{ref_name}_CE', f'{stats["CE"]:.4f}'])
-        w.writerow([f'{ref_name}_overlap', stats['overlap']])
-        w.writerow([f'{ref_name}_n_points', stats['n_points']])
+        w.writerow([f'gmst_{ref_name}_R', f'{stats["R"]:.4f}'])
+        w.writerow([f'gmst_{ref_name}_CE', f'{stats["CE"]:.4f}'])
+        w.writerow([f'gmst_{ref_name}_overlap', stats['overlap']])
+        w.writerow([f'gmst_{ref_name}_n_points', stats['n_points']])
+    for sp_name, stats in spatial_results.items():
+        w.writerow([f'spatial_{sp_name}_R', f'{stats["R"]:.4f}'])
+        w.writerow([f'spatial_{sp_name}_RMSE', f'{stats["RMSE"]:.4f}'])
+        w.writerow([f'spatial_{sp_name}_ref_geo_mean', f'{stats["ref_geo_mean"]:.4f}'])
+    for pp_name, stats in proxy_results.items():
+        w.writerow([f'proxy_{pp_name}_N', int(stats['N'])])
+        w.writerow([f'proxy_{pp_name}_R', f'{stats["R"]:.4f}'])
+        w.writerow([f'proxy_{pp_name}_RMSE', f'{stats["RMSE"]:.4f}'])
+        w.writerow([f'proxy_{pp_name}_bias', f'{stats["bias"]:.4f}'])
     w.writerow(['n_ensemble_members', int(n_ens)])
     w.writerow(['age_range_BP', f'{int(ages.min())}-{int(ages.max())}'])
 
 json_metrics = {
     'spatial': {'anomaly_6ka_geo_mean': geo_mean,
-                'anom_window_BP': ages_anom, 'ref_window_BP': ages_ref},
+                'anom_window_BP': ages_anom, 'ref_window_BP': ages_ref,
+                'comparisons': spatial_results},
     'gmst': gmst_results,
+    'proxy': proxy_results,
     'config': {'n_ensemble_members': int(n_ens),
                'age_range_BP': [int(ages.min()), int(ages.max())]},
 }
@@ -373,6 +572,16 @@ for ref_name, stats in gmst_results.items():
       <div class="value">{stats["CE"]:.3f}</div>
       <div class="label">GMST CE vs {ref_name}</div>
     </div>''')
+for sp_name, stats in spatial_results.items():
+    metric_cards.append(f'''<div class="metric-card">
+      <div class="value">{stats["R"]:.3f}</div>
+      <div class="label">Spatial R vs {sp_name}</div>
+    </div>''')
+for pp_name, stats in proxy_results.items():
+    metric_cards.append(f'''<div class="metric-card">
+      <div class="value">{stats["R"]:.3f}</div>
+      <div class="label">Proxy R ({pp_name}, N={stats["N"]})</div>
+    </div>''')
 
 table_rows = ''
 for ref_name, stats in gmst_results.items():
@@ -391,6 +600,53 @@ if not table_rows:
 has_diff_plot = bool(references) and os.path.exists(
     os.path.join(VALIDATION_DIR, 'gmst_difference.png'))
 primary_ref_name = references[0]['name'] if references else ''
+
+# Spatial comparison section (one block per reference spatial field)
+spatial_section = ''
+if spatial_results:
+    sp_items = []
+    sp_items.append('  <h2>Spatial Comparison at 6 ka</h2>')
+    sp_items.append('  <p>Side-by-side 6 ka temperature anomaly for the custom '
+                    'reconstruction and each spatial reference, plus their difference. '
+                    'Pattern correlation (R) and area-weighted RMSE are computed after '
+                    'nearest-neighbor regridding of the reference onto the reconstruction '
+                    'grid.</p>')
+    sp_items.append('  <table><tr><th>Reference</th><th>Pattern R</th><th>RMSE (°C)</th>'
+                    '<th>Recon geo mean</th><th>Ref geo mean</th></tr>')
+    for sp_name, stats in spatial_results.items():
+        sp_items.append(f'    <tr><td>{sp_name}</td>'
+                        f'<td>{stats["R"]:.4f}</td>'
+                        f'<td>{stats["RMSE"]:.4f}</td>'
+                        f'<td>{stats["recon_geo_mean"]:+.3f} °C</td>'
+                        f'<td>{stats["ref_geo_mean"]:+.3f} °C</td></tr>')
+    sp_items.append('  </table>')
+    for sp_name in spatial_results:
+        sp_items.append(f'  <img src="spatial_anomaly_6ka_vs_{sp_name}.png" '
+                        f'alt="6 ka spatial comparison vs {sp_name}">')
+    spatial_section = '\n'.join(sp_items)
+
+# Proxy comparison section
+proxy_section = ''
+if proxy_results:
+    pp_items = []
+    pp_items.append('  <h2>Proxy-Site Comparison (6 ka)</h2>')
+    pp_items.append('  <p>For each proxy site, the reconstruction\u2019s 6 ka anomaly is '
+                    'sampled via nearest-neighbor on the model grid, then compared to the '
+                    'proxy\u2019s own 6 ka anomaly (5500\u20136500 BP relative to 0\u20131000 BP '
+                    'baseline, falling back to the record mean if the modern baseline is '
+                    'absent). R, RMSE, and bias (recon \u2212 proxy) summarize the match.</p>')
+    pp_items.append('  <table><tr><th>Dataset</th><th>N</th><th>R</th><th>RMSE (°C)</th>'
+                    '<th>Bias (°C)</th></tr>')
+    for pp_name, stats in proxy_results.items():
+        pp_items.append(f'    <tr><td>{pp_name}</td>'
+                        f'<td>{stats["N"]}</td>'
+                        f'<td>{stats["R"]:.4f}</td>'
+                        f'<td>{stats["RMSE"]:.4f}</td>'
+                        f'<td>{stats["bias"]:+.4f}</td></tr>')
+    pp_items.append('  </table>')
+    for pp_name, plot_file in proxy_plots.items():
+        pp_items.append(f'  <img src="{plot_file}" alt="Proxy comparison ({pp_name})">')
+    proxy_section = '\n'.join(pp_items)
 
 html = f"""<!DOCTYPE html>
 <html>
@@ -450,6 +706,10 @@ html = f"""<!DOCTYPE html>
      {ages_ref[0]}–{ages_ref[1]} BP baseline. Robinson projection.</p>
   <img src="spatial_anomaly_6ka.png" alt="6 ka spatial anomaly map">
 
+{spatial_section}
+
+{proxy_section}
+
   <h2>GMST Time Series</h2>
   <p>Custom reconstruction ensemble spread alongside reference medians. X-axis
      runs from the oldest age (left) to present (right).</p>
@@ -472,7 +732,13 @@ with open(os.path.join(VALIDATION_DIR, 'index.html'), 'w', encoding='utf-8') as 
     f.write(html)
 
 print(f'\nValidation complete. Outputs in {VALIDATION_DIR}/')
-print('  Plots: spatial_anomaly_6ka.png, gmst_timeseries.png, gmst_ensemble_members.png'
-      + (', gmst_difference.png' if has_diff_plot else ''))
+plot_list = ['spatial_anomaly_6ka.png', 'gmst_timeseries.png', 'gmst_ensemble_members.png']
+if has_diff_plot:
+    plot_list.append('gmst_difference.png')
+for sp_name in spatial_results:
+    plot_list.append(f'spatial_anomaly_6ka_vs_{sp_name}.png')
+for pp_name in proxy_plots:
+    plot_list.append(proxy_plots[pp_name])
+print('  Plots: ' + ', '.join(plot_list))
 print('  Data:  validation_metrics.csv, validation_metrics.json')
 print('  HTML:  index.html')
