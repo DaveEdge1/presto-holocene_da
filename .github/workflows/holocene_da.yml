@@ -178,11 +178,20 @@ jobs:
           echo "Config file:"
           cat config/user_config.yml
           echo ""
+          # If the repo ships a patched da_main_code.py at the root, mount
+          # it over the container's copy. Lets us deploy memory/perf fixes
+          # without rebuilding davidedge/lipd_webapps:holocene_da.
+          DA_PATCH_MOUNT=""
+          if [ -f da_main_code.py ]; then
+            echo "Mounting patched da_main_code.py from repo root"
+            DA_PATCH_MOUNT="-v $(pwd)/da_main_code.py:/app/da_main_code.py:ro"
+          fi
           docker run --rm \
             -v $(pwd)/lipd_legacy.pkl:/proxies/temp12k/Temp12k1_0_2.pkl:ro \
             -v $(pwd)/config/user_config.yml:/config_default.yml:ro \
             -v $(pwd)/models:/models \
             -v $(pwd)/results:/results \
+            ${DA_PATCH_MOUNT} \
             davidedge/lipd_webapps:holocene_da
 
       - name: Verify reconstruction results
