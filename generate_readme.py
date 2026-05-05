@@ -198,7 +198,7 @@ def _cleaning_bullet(summary):
 
 
 def build_readme(query, configs, *, cleaning_report=None,
-                 user_notes=None, pages_url=None):
+                 user_notes=None, pages_url=None, releases_url=None):
     mode = (query.get("mode") or "").strip().lower()
     mode_desc = MODE_DESCRIPTIONS.get(mode, mode or "—")
 
@@ -317,6 +317,29 @@ def build_readme(query, configs, *, cleaning_report=None,
         )
     lines.append("")
 
+    if releases_url:
+        lines.append("## Citation & archive")
+        lines.append("")
+        lines.append(
+            "Each successful reconstruction is bundled into a tagged "
+            f"GitHub Release named `recon-<run_id>` at <{releases_url}>. "
+            "The release preserves the recon NetCDFs, the proxy database "
+            "that was assimilated (`lipd_legacy.pkl`), the validation "
+            "page, and the input configs — these survive beyond the "
+            "Actions artifact retention so the run remains fully "
+            "auditable and reproducible long after the workflow logs "
+            "expire."
+        )
+        lines.append("")
+        lines.append(
+            "If [GitHub–Zenodo integration]"
+            "(https://docs.github.com/en/repositories/archiving-a-github-repository/referencing-and-citing-content) "
+            "is enabled on this repository, each release also receives a "
+            "citable DOI, with a stable concept DOI for the "
+            "reconstruction series as a whole."
+        )
+        lines.append("")
+
     lines.append("## Method")
     lines.append("")
     lines.append(
@@ -376,6 +399,10 @@ def main():
     parser.add_argument("--pages-url",
                         help="Public GitHub Pages URL for this repo, "
                              "linked from the Results section.")
+    parser.add_argument("--releases-url",
+                        help="GitHub Releases URL for this repo, linked "
+                             "from the Citation & archive section. When "
+                             "omitted the section is suppressed.")
     parser.add_argument("--out", default="README.md",
                         help="Output README path (default: %(default)s)")
     args = parser.parse_args()
@@ -418,6 +445,7 @@ def main():
         cleaning_report=cleaning_report,
         user_notes=user_notes,
         pages_url=args.pages_url,
+        releases_url=args.releases_url,
     )
     Path(args.out).write_text(text, encoding="utf-8")
     print(f"Wrote {args.out} ({len(text):,} bytes)")
