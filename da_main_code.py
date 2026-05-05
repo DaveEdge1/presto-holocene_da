@@ -125,10 +125,13 @@ ind_to_save = np.sort(ind_to_save)
 # via np.memmap and stored as float32 to avoid OOM on standard CI runners
 # at high time resolution. They behave like ndarrays for all downstream use.
 _ens_mmap_dir = tempfile.mkdtemp(prefix='holocene_da_ens_')
+# Axis order is (n_ages, n_ens_to_save, n_state) — the layout the post-loop
+# code wants after np.swapaxes — so per-timestep writes touch one contiguous
+# ~3 MB region of the file instead of striding across the whole 3 GB array.
 def _make_ens_memmap(name):
     arr = np.memmap(os.path.join(_ens_mmap_dir, name+'.dat'),
                     dtype=np.float32, mode='w+',
-                    shape=(n_state, n_ens_to_save, n_ages))
+                    shape=(n_ages, n_ens_to_save, n_state))
     arr[:] = np.float32(np.nan)
     return arr
 recon_ens         = _make_ens_memmap('recon_ens')
@@ -273,7 +276,7 @@ for age_counter,age in enumerate(proxy_data['age_centers']):
     #
     # Get the mean and selected ensemble values
     prior_mean[:,age_counter]  = np.mean(Xb,axis=1)
-    prior_ens[:,:,age_counter] = Xb[:,ind_to_save]
+    prior_ens[age_counter,:,:] = Xb[:,ind_to_save].T
     #
     # Save the prior estimates of proxies, for analysis later
     prior_proxy_means[age_counter,:] = np.mean(model_estimates_for_age,axis=0)
@@ -333,16 +336,16 @@ for age_counter,age in enumerate(proxy_data['age_centers']):
     #
     # Get the mean and selected ensemble values
     recon_mean[:,age_counter]  = np.mean(Xa,axis=1)
-    recon_ens[:,:,age_counter] = Xa[:,ind_to_save]
+    recon_ens[age_counter,:,:] = Xa[:,ind_to_save].T
     #
     # Note progression of the reconstruction
     print('Time step '+str(age_counter)+'/'+str(len(proxy_data['age_centers'] ))+' complete.  Time: '+str('%1.2f' % (time.time()-starttime_loop))+' sec')
 
-# Reshape the data arrays
+# Reshape the data arrays.
+# recon_ens / prior_ens are already stored as (n_ages, n_ens_to_save, n_state)
+# by the memmap allocation above, so no swapaxes is needed for them.
 recon_mean = np.transpose(recon_mean)
-recon_ens  = np.swapaxes(recon_ens,0,2)
 prior_mean = np.transpose(prior_mean)
-prior_ens  = np.swapaxes(prior_ens,0,2)
 
 # Reshape the gridded reconstruction to a lat-lon grid
 recon_mean_grid = np.reshape(recon_mean[:,:n_latlonvars], (n_ages,              n_lat,n_lon,n_vars))
