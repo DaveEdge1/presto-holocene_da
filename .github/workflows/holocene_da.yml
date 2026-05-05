@@ -3,7 +3,8 @@ name: Holocene DA Reconstruction
 on:
   push:
     paths:
-      - 'query_params.json'   # not in template; server commits this LAST so all files are present
+      - 'query_params.json'         # server commits this LAST so all files are present
+      - 'config/user_config.yml'    # re-run reconstruction when config changes
   workflow_dispatch:
     inputs:
       unique_id:
