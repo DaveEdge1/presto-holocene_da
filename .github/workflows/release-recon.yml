@@ -64,17 +64,31 @@ jobs:
           echo "recon_run_number=${RECON_RUN_NUMBER}" >> $GITHUB_OUTPUT
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
-      - name: Skip if release already exists
+      - name: Check release state
         id: existing
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "${{ steps.resolve.outputs.tag }}" \
-               --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release ${{ steps.resolve.outputs.tag }} already exists — skipping."
-            echo "skip=true" >> $GITHUB_OUTPUT
+          # Resumability: if a previous run created the release but failed
+          # before attaching the NetCDF (e.g. the 2 GiB asset cap), we want
+          # to re-attempt the upload rather than skip. Only skip when the
+          # release already has at least one NetCDF asset attached.
+          TAG="${{ steps.resolve.outputs.tag }}"
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            NC_COUNT=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets \
+              --jq '[.assets[] | select(.name | test("\\.nc(\\.xz)?$"))] | length')
+            if [ "$NC_COUNT" -gt 0 ]; then
+              echo "Release $TAG already has $NC_COUNT NetCDF asset(s) — skipping."
+              echo "skip=true"   >> $GITHUB_OUTPUT
+              echo "exists=true" >> $GITHUB_OUTPUT
+            else
+              echo "Release $TAG exists but has no NetCDF asset — will attach missing assets."
+              echo "skip=false"  >> $GITHUB_OUTPUT
+              echo "exists=true" >> $GITHUB_OUTPUT
+            fi
           else
-            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "skip=false"   >> $GITHUB_OUTPUT
+            echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Download reconstruction artifact
@@ -89,6 +103,24 @@ jobs:
             --dir ./bundle/results
           echo "Recon contents:"
           ls -lh ./bundle/results/
+
+      - name: Compress oversized NetCDFs
+        if: steps.existing.outputs.skip != 'true'
+        run: |
+          # GitHub release assets are capped at 2 GiB per file. Any larger
+          # NetCDF gets xz-compressed in place (climate data typically
+          # shrinks 2-5x). Consumers run `xz -d file.nc.xz` to decompress.
+          MAX_BYTES=2147483648
+          if [ -d ./bundle/results ]; then
+            while IFS= read -r f; do
+              SIZE=$(stat -c%s "$f")
+              if [ "$SIZE" -ge "$MAX_BYTES" ]; then
+                echo "Compressing $(basename "$f") (${SIZE} bytes) with xz..."
+                xz -T0 -6 "$f"
+                ls -lh "${f}.xz"
+              fi
+            done < <(find ./bundle/results -type f -name '*.nc')
+          fi
 
       - name: Download proxy database artifact
         if: steps.existing.outputs.skip != 'true'
@@ -170,12 +202,22 @@ jobs:
             PROXY_LINE="- *\`lipd_legacy.pkl\` was not recoverable — the upstream artifact had already expired when this release was built (the proxy-data artifact has 7-day retention).*"
           fi
           # List the actual NetCDFs that were captured so the notes match
-          # the assets, regardless of how holocene_da named them.
+          # the assets, regardless of how holocene_da named them. Files
+          # exceeding the 2 GiB release-asset cap are xz-compressed; flag
+          # those so consumers know to decompress before reading.
           NC_LIST=""
           if [ -d ./bundle/results ]; then
-            for nc in ./bundle/results/*.nc; do
-              [ -f "$nc" ] || continue
-              NC_LIST="${NC_LIST}- \`$(basename "$nc")\` — Holocene DA reconstruction NetCDF"$'\n'
+            shopt -s nullglob
+            for nc in ./bundle/results/*.nc ./bundle/results/*.nc.xz; do
+              name=$(basename "$nc")
+              case "$name" in
+                *.nc.xz)
+                  NC_LIST="${NC_LIST}- \`${name}\` — Holocene DA reconstruction NetCDF (xz-compressed; run \`xz -d\` before opening)"$'\n'
+                  ;;
+                *)
+                  NC_LIST="${NC_LIST}- \`${name}\` — Holocene DA reconstruction NetCDF"$'\n'
+                  ;;
+              esac
             done
           fi
           {
@@ -198,7 +240,7 @@ jobs:
           } > release_notes.md
           echo "notes_path=release_notes.md" >> $GITHUB_OUTPUT
 
-      - name: Create release
+      - name: Create or update release
         if: steps.existing.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -226,8 +268,21 @@ jobs:
           done
           echo "Attaching ${#ASSETS[@]} files:"
           printf '  %s\n' "${ASSETS[@]}"
-          gh release create "${{ steps.resolve.outputs.tag }}" \
-            --repo "${{ github.repository }}" \
-            --title "Reconstruction #${{ steps.resolve.outputs.recon_run_number }} (run ${{ steps.resolve.outputs.recon_run_id }})" \
-            --notes-file release_notes.md \
-            "${ASSETS[@]}"
+
+          if [ "${{ steps.existing.outputs.exists }}" = "true" ]; then
+            # Resuming a release that exists but lacked the NetCDF asset:
+            # upload the missing files and refresh the notes.
+            gh release upload "${{ steps.resolve.outputs.tag }}" \
+              --repo "${{ github.repository }}" \
+              --clobber \
+              "${ASSETS[@]}"
+            gh release edit "${{ steps.resolve.outputs.tag }}" \
+              --repo "${{ github.repository }}" \
+              --notes-file release_notes.md
+          else
+            gh release create "${{ steps.resolve.outputs.tag }}" \
+              --repo "${{ github.repository }}" \
+              --title "Reconstruction #${{ steps.resolve.outputs.recon_run_number }} (run ${{ steps.resolve.outputs.recon_run_id }})" \
+              --notes-file release_notes.md \
+              "${ASSETS[@]}"
+          fi
