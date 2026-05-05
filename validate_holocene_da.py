@@ -30,6 +30,8 @@ import cartopy.util as cutil
 RECON_DIR     = os.environ.get('RECON_DIR', '/recons')
 VALIDATION_DIR = os.environ.get('VALIDATION_DIR', '/validation')
 REFERENCE_DIR = os.environ.get('REFERENCE_DIR', '/reference_data')
+COMPARISON_JSON = os.environ.get('COMPARISON_JSON',
+                                  os.path.join(VALIDATION_DIR, 'comparison.json'))
 
 os.makedirs(VALIDATION_DIR, exist_ok=True)
 
@@ -553,6 +555,194 @@ json_metrics = {
 with open(os.path.join(VALIDATION_DIR, 'validation_metrics.json'), 'w') as f:
     json.dump(json_metrics, f, indent=2, default=str)
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5b. Load proxy-database comparison vs published Holocene DA (Temp12k 1.0.2)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _fmt_int(v, dash='—'):
+    if v is None or v == '':
+        return dash
+    try:
+        return f'{int(round(float(v))):,}'
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _fmt_float(v, fmt='{:.1f}', dash='—'):
+    if v is None or v == '':
+        return dash
+    try:
+        return fmt.format(float(v))
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _build_comparison_html(c):
+    counts = c['counts']
+    stats  = c['stats']
+    ref_label = c.get('reference_label', 'Reference')
+    arts  = c.get('artifacts', {}) or {}
+    dls   = arts.get('downloads', {}) or {}
+
+    cust_total = counts.get('custom_total', counts['shared'] + counts['only_custom'])
+    ref_total  = counts.get('reference_total', counts['shared'] + counts['only_reference'])
+
+    # Funnel-style summary chips
+    chips = []
+    for label, val in [
+        (f'{ref_label} records',      ref_total),
+        ('Custom records',            cust_total),
+        ('Shared',                    counts['shared']),
+        ('Custom-only',               counts['only_custom']),
+        (f'{ref_label}-only',         counts['only_reference']),
+    ]:
+        chips.append(f'''
+      <div class="metric-card">
+        <div class="value">{_fmt_int(val)}</div>
+        <div class="label">{label}</div>
+      </div>''')
+
+    # Side-by-side stats
+    cs, rs = stats['custom'], stats['reference']
+    stats_rows = []
+    rows_def = [
+        ('Records',                'records',                 _fmt_int),
+        ('Distinct archive types', 'distinct_archives',       _fmt_int),
+        ('Earliest record start (yr BP)',  'earliest_start_BP', _fmt_int),
+        ('Latest record end (yr BP)',      'latest_end_BP',     _fmt_int),
+        ('Median record length (yr)',      'median_record_length_yr',
+         lambda v: _fmt_float(v, '{:.0f}')),
+        ('Median observations per record', 'median_n_obs',
+         lambda v: _fmt_float(v, '{:.0f}')),
+    ]
+    for label, key, fmt in rows_def:
+        stats_rows.append(
+            f'<tr><td>{label}</td>'
+            f'<td>{fmt(cs.get(key))}</td>'
+            f'<td>{fmt(rs.get(key))}</td></tr>')
+
+    # Archive breakdown
+    arch_rows = []
+    totals = {'shared': 0, 'only_custom': 0, 'only_reference': 0}
+    for r in c.get('archive_rows', []):
+        totals['shared'] += r['shared']
+        totals['only_custom'] += r['only_custom']
+        totals['only_reference'] += r['only_reference']
+        arch_rows.append(
+            f'<tr><td>{r["archive"]}</td>'
+            f'<td>{r["shared"]}</td>'
+            f'<td>{r["only_custom"]}</td>'
+            f'<td>{r["only_reference"]}</td>'
+            f'<td>{r["shared"] + r["only_custom"] + r["only_reference"]}</td></tr>')
+    arch_rows.append(
+        f'<tr style="font-weight:bold"><td>Total</td>'
+        f'<td>{totals["shared"]}</td>'
+        f'<td>{totals["only_custom"]}</td>'
+        f'<td>{totals["only_reference"]}</td>'
+        f'<td>{sum(totals.values())}</td></tr>')
+
+    def _preview_table(records, csv_link, total):
+        if not records:
+            return '<p><em>None.</em></p>'
+        body = []
+        for r in records:
+            body.append(
+                f'<tr><td><code>{r.get("tsid","")}</code></td>'
+                f'<td>{r.get("archive","")}</td>'
+                f'<td>{r.get("dataSetName","")}</td>'
+                f'<td>{_fmt_int(r.get("time_start_BP"))}–{_fmt_int(r.get("time_end_BP"))}</td>'
+                f'<td>{_fmt_int(r.get("n_obs"))}</td></tr>')
+        table = ('<table><tr><th>TSID</th><th>Archive</th>'
+                 '<th>Dataset</th><th>Age range (BP)</th><th>n_obs</th></tr>'
+                 + ''.join(body) + '</table>')
+        if csv_link and total and total > len(records):
+            table += (f'<p><a href="{csv_link}" download>'
+                      f'⬇ Download full CSV ({total} rows)</a></p>')
+        return table
+
+    preview_custom = _preview_table(c.get('only_custom_preview', []),
+                                     dls.get('only_custom'),
+                                     counts['only_custom'])
+    preview_ref    = _preview_table(c.get('only_reference_preview', []),
+                                     dls.get('only_reference'),
+                                     counts['only_reference'])
+
+    spatial_img = (f'<img src="{arts["spatial_map"]}" alt="Proxy spatial comparison">'
+                   if arts.get('spatial_map') else '')
+    temporal_img = (f'<img src="{arts["temporal_coverage"]}" alt="Temporal coverage comparison">'
+                    if arts.get('temporal_coverage') else '')
+
+    return f'''
+  <details class="section">
+    <summary style="font-size: 1.3rem; font-weight: 600; cursor: pointer;
+                    color: #374151; padding: 8px 0;">
+      Proxy Database Comparison vs {ref_label}
+      <span style="font-weight: 400; color: #6b7280; font-size: 0.95rem;">
+        (shared {counts["shared"]}, custom-only {counts["only_custom"]},
+         reference-only {counts["only_reference"]})
+      </span>
+    </summary>
+
+    <div style="padding-top: 16px;">
+      <p>Comparison of the proxy records in this run’s
+         <code>lipd_legacy.pkl</code> against
+         <strong>{ref_label}</strong>, the version used by the published
+         Erb et al. 2022 reconstruction. Records are matched on
+         <code>paleoData_TSid</code> after the same
+         <code>paleoData_inCompilation == Temp12k</code> +
+         <code>paleoData_units == degC</code> filter that
+         <code>da_load_proxies.py</code> applies at runtime.</p>
+
+      <div class="metric-grid">{''.join(chips)}</div>
+
+      <h3>Side-by-side statistics</h3>
+      <table><tr><th>Statistic</th><th>Custom</th><th>{ref_label}</th></tr>
+        {''.join(stats_rows)}
+      </table>
+
+      <h3>Records by archive type</h3>
+      <table><tr><th>Archive</th><th>Shared</th><th>Custom-only</th>
+        <th>{ref_label}-only</th><th>Total</th></tr>
+        {''.join(arch_rows)}
+      </table>
+
+      <h3>Spatial distribution</h3>
+      {spatial_img}
+
+      <h3>Temporal coverage</h3>
+      <p>Records covering each 250-yr age bin, partitioned by which
+         database they belong to.</p>
+      {temporal_img}
+
+      <h3>Records exclusive to the custom run <small>({counts["only_custom"]})</small></h3>
+      <p>Records present in this reconstruction’s proxy database but
+         absent from {ref_label} — typically records added in later
+         Temp12k versions or pulled from filtered queries.</p>
+      {preview_custom}
+
+      <h3>Records exclusive to {ref_label} <small>({counts["only_reference"]})</small></h3>
+      <p>Records used by the published reconstruction but missing from this
+         custom run — typically records dropped by the user’s
+         filter or removed from later Temp12k versions.</p>
+      {preview_ref}
+    </div>
+  </details>
+'''
+
+
+comparison_html = ''
+if os.path.exists(COMPARISON_JSON):
+    print(f'\nLoading proxy comparison from {COMPARISON_JSON} ...')
+    try:
+        with open(COMPARISON_JSON) as f:
+            comparison_data = json.load(f)
+        comparison_html = _build_comparison_html(comparison_data)
+        print('  Comparison HTML section built.')
+    except Exception as exc:
+        print(f'  WARN: failed to render comparison.json: {exc}')
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 6. HTML report
 # ═══════════════════════════════════════════════════════════════════════════
@@ -709,6 +899,8 @@ html = f"""<!DOCTYPE html>
 {spatial_section}
 
 {proxy_section}
+
+{comparison_html}
 
   <h2>GMST Time Series</h2>
   <p>Custom reconstruction ensemble spread alongside reference medians. X-axis
