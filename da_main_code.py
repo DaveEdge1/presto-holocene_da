@@ -104,8 +104,30 @@ n_lon        = len(model_data['lon'])
 n_latlonvars = n_lat*n_lon*n_vars
 n_state      = (n_latlonvars) + n_proxies
 
-# Determine the total possible number of ensemble members
-n_ens_possible = len(da_load_models.get_indices_for_prior(options,model_data,0))
+# Determine the total possible number of ensemble members.
+#
+# get_indices_for_prior() returns the model time slices within prior_window
+# of the requested age. The count can vary across ages when the window is
+# clipped at the edges of age_range_model or when the per-model time grids
+# don't line up. The DA loop below assumes a constant ensemble size, so we
+# clamp n_ens_possible to the smallest count seen across the reconstruction
+# ages and deterministically subsample longer per-age priors down to it.
+prior_counts = np.array([
+    len(da_load_models.get_indices_for_prior(options,model_data,age))
+    for age in proxy_data['age_centers']
+])
+n_ens_possible = int(prior_counts.min())
+if n_ens_possible == 0:
+    raise RuntimeError(
+        'No prior states available for at least one reconstruction age. '
+        'Check prior_window against age_range_model / age_range_to_reconstruct.'
+    )
+n_ages_clamped = int((prior_counts > n_ens_possible).sum())
+if n_ages_clamped:
+    print(' --- Variable prior count across ages: min='+str(int(prior_counts.min()))+
+          ', max='+str(int(prior_counts.max()))+
+          '; subsampling '+str(n_ages_clamped)+'/'+str(len(prior_counts))+
+          ' ages down to n_ens_possible='+str(n_ens_possible)+' ---')
 
 # If using less than 100 percent for the ensemble members, randomly choose them here.
 np.random.seed(seed=options['seed_for_prior'])
@@ -237,10 +259,16 @@ for age_counter,age in enumerate(proxy_data['age_centers']):
     proxy_values_for_age     = proxy_data['values_binned'][:,age_counter]
     proxy_resolution_for_age = proxy_data['resolution_binned'][:,age_counter]
     #
-    # Get the indices of the prior which will be used for this data assimilation step
+    # Get the indices of the prior which will be used for this data assimilation step.
+    # If more slices are available than the clamped n_ens_possible, deterministically
+    # subsample down. Seeding by (seed_for_prior + age_counter) keeps the choice
+    # reproducible while decorrelating which slices get dropped across ages.
     indices_for_prior = da_load_models.get_indices_for_prior(options,model_data,age)
+    if len(indices_for_prior) > n_ens_possible:
+        rng_age = np.random.default_rng(options['seed_for_prior'] + age_counter)
+        subsample = np.sort(rng_age.choice(len(indices_for_prior),n_ens_possible,replace=False))
+        indices_for_prior = np.asarray(indices_for_prior)[subsample]
     model_number_for_prior = model_data['number'][indices_for_prior]
-    if len(indices_for_prior) != n_ens_possible: print(' !!! Warning: number of prior ages selected does not match n_ens.  Age='+str(age))
     #
     # Get the prior values for the variables to reconstruct
     for j,var_name in enumerate(options['vars_to_reconstruct']):
