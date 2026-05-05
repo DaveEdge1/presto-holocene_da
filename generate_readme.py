@@ -231,9 +231,11 @@ def build_readme(query, configs, *, cleaning_report=None,
         "(Paleoclimate Reconstruction Storehouse) from the "
         f"[Holocene DA Template]({TEMPLATE_REPO}). It runs the offline "
         "paleoclimate data-assimilation method of "
-        "[Erb et al. (2022)](https://doi.org/10.5194/cp-18-2599-2022) "
-        "to reconstruct spatially complete temperature fields over the "
-        "parameters and proxy selection captured below."
+        "[Erb et al. (2022)](https://doi.org/10.5194/cp-18-2599-2022) — "
+        "implemented in the original [Holocene-Reconstruction/Holocene-code]"
+        "(https://github.com/Holocene-Reconstruction/Holocene-code) "
+        "repository — to reconstruct spatially complete temperature fields "
+        "over the parameters and proxy selection captured below."
     )
     lines.append("")
 
