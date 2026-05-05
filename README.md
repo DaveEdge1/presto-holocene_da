@@ -4,7 +4,7 @@
 
 By [David Edge](https://orcid.org/0000-0001-6938-2850), [Michael Erb](https://orcid.org/0000-0002-1763-2522), [Nicholas McKay](https://orcid.org/0000-0003-3598-5113), [Deborah Khider](https://orcid.org/0000-0001-7501-8430), & [Julien Emile-Geay](https://orcid.org/0000-0001-5920-4751).
 
-[PReSto](https://paleopresto.com) (Paleoclimate Reconstruction Storehouse) lowers the barriers to utilizing, reproducing, and customizing paleoclimate reconstructions. This repository is a template used by PReSto to run the Holocene DA reconstruction via GitHub Actions.
+[PReSto](https://paleopresto.com) (Paleoclimate Reconstruction Storehouse) lowers the barriers to utilizing, reproducing, and customizing paleoclimate reconstructions. This repository is a template used by PReSto to run the [Holocene DA reconstruction](https://github.com/Holocene-Reconstruction/Holocene-code) via GitHub Actions.
 
 ## Holocene DA Method
 
