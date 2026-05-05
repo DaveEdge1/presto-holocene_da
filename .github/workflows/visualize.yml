@@ -114,6 +114,9 @@ jobs:
     needs: [find-latest-run, download-artifact]
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: read
+      actions: read   # for gh run download of holocene-da-proxy-data
 
     steps:
       - name: Checkout repository
@@ -133,6 +136,50 @@ jobs:
       - name: Pull Docker image
         run: docker pull davidedge/lipd_webapps:holocene_da
 
+      - name: Download proxy data artifact
+        # Has 7-day retention, so older runs may be missing it. The
+        # comparison step is best-effort and will be skipped if the
+        # pickle isn't recoverable.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p ./prepare-data
+          if gh run download "${{ needs.find-latest-run.outputs.run_id }}" \
+               --repo "${{ github.repository }}" \
+               --name "holocene-da-proxy-data-${{ needs.find-latest-run.outputs.run_id }}" \
+               --dir ./prepare-data 2>/dev/null; then
+            echo "Proxy data recovered:"
+            ls -lh ./prepare-data/
+          else
+            echo "holocene-da-proxy-data unavailable (likely expired) — skipping comparison."
+          fi
+
+      - name: Generate proxy comparison vs Temp12k 1.0.2
+        # Builds comparison.json + temporal/spatial PNGs + per-set CSVs in
+        # ./validation, which validate_holocene_da.py then surfaces in a
+        # collapsible "Proxy Database vs Temp12k 1.0.2" HTML section.
+        continue-on-error: true
+        run: |
+          if [ ! -f ./prepare-data/lipd_legacy.pkl ]; then
+            echo "lipd_legacy.pkl not present — skipping comparison."
+            exit 0
+          fi
+          if [ ! -f ./compare_to_temp12k_v102.py ]; then
+            echo "compare_to_temp12k_v102.py not present in repo — skipping comparison."
+            exit 0
+          fi
+          mkdir -p ./validation
+          docker run --rm \
+            --entrypoint conda \
+            -v $(pwd)/compare_to_temp12k_v102.py:/app/compare_to_temp12k_v102.py:ro \
+            -v $(pwd)/prepare-data/lipd_legacy.pkl:/app/lipd_legacy.pkl:ro \
+            -v $(pwd)/validation:/validation \
+            davidedge/lipd_webapps:holocene_da \
+            run --no-capture-output -n python3_da python /app/compare_to_temp12k_v102.py \
+              --custom-pickle /app/lipd_legacy.pkl \
+              --out-dir       /validation
+
       - name: Run validation script
         run: |
           mkdir -p ./validation
@@ -145,6 +192,7 @@ jobs:
             -e RECON_DIR=/recons \
             -e VALIDATION_DIR=/validation \
             -e REFERENCE_DIR=/reference_data \
+            -e COMPARISON_JSON=/validation/comparison.json \
             davidedge/lipd_webapps:holocene_da \
             run --no-capture-output -n python3_da python /app/validate_holocene_da.py
 
