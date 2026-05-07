@@ -15,7 +15,6 @@ jobs:
       run_number: ${{ steps.get_run.outputs.run_number }}
       run_id: ${{ steps.get_run.outputs.run_id }}
       artifact_name: ${{ steps.get_run.outputs.artifact_name }}
-      has_artifact: ${{ steps.get_run.outputs.has_artifact }}
 
     steps:
         - name: Find reconstruction run and artifact
@@ -46,29 +45,9 @@ jobs:
             echo "run_number=$run_number" >> $GITHUB_OUTPUT
             echo "artifact_name=$artifact_name" >> $GITHUB_OUTPUT
 
-            # Verify the upstream actually produced the artifact. The recon
-            # workflow can complete with conclusion=success while skipping
-            # the reconstruct job (e.g. the initial scaffold push that lacks
-            # query_params.json), which leaves no artifact to visualize.
-            artifact_match=$(gh api \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "/repos/${{ github.repository }}/actions/runs/${run_id}/artifacts" \
-              --jq ".artifacts[] | select(.name == \"${artifact_name}\" and .expired == false) | .name" \
-              | head -n1)
-
-            if [ -n "$artifact_match" ]; then
-              echo "has_artifact=true" >> $GITHUB_OUTPUT
-              echo "Found artifact ${artifact_name} on run ${run_id}"
-            else
-              echo "has_artifact=false" >> $GITHUB_OUTPUT
-              echo "No artifact ${artifact_name} on run ${run_id} — skipping downstream visualization."
-            fi
-
   download-artifact:
     name: Download Reconstruction Artifact
     needs: find-latest-run
-    if: needs.find-latest-run.outputs.has_artifact == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -133,7 +112,6 @@ jobs:
   validate:
     name: Run Validation
     needs: [find-latest-run, download-artifact]
-    if: needs.find-latest-run.outputs.has_artifact == 'true'
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
@@ -155,8 +133,10 @@ jobs:
           echo "Available NetCDF files:"
           ls -lh ./recon-data/*.nc || echo "No .nc files found"
 
-      - name: Pull Docker image
-        run: docker pull davidedge/lipd_webapps:holocene_da
+      - name: Build patched container image
+        # Layers scripts/ over davidedge/lipd_webapps:holocene_da. Same
+        # image used for both the comparison and the validation step below.
+        run: docker build -t presto-holocene_da:local .
 
       - name: Download proxy data artifact
         # Has 7-day retention, so older runs may be missing it. The
@@ -187,17 +167,15 @@ jobs:
             echo "lipd_legacy.pkl not present — skipping comparison."
             exit 0
           fi
-          if [ ! -f ./compare_to_temp12k_v102.py ]; then
-            echo "compare_to_temp12k_v102.py not present in repo — skipping comparison."
-            exit 0
-          fi
           mkdir -p ./validation
+          # The comparison script is baked into the locally-built image
+          # at /app/compare_to_temp12k_v102.py (via Dockerfile COPY of
+          # scripts/), so no script mount-override is needed.
           docker run --rm \
             --entrypoint conda \
-            -v $(pwd)/compare_to_temp12k_v102.py:/app/compare_to_temp12k_v102.py:ro \
             -v $(pwd)/prepare-data/lipd_legacy.pkl:/app/lipd_legacy.pkl:ro \
             -v $(pwd)/validation:/validation \
-            davidedge/lipd_webapps:holocene_da \
+            presto-holocene_da:local \
             run --no-capture-output -n python3_da python /app/compare_to_temp12k_v102.py \
               --custom-pickle /app/lipd_legacy.pkl \
               --out-dir       /validation
@@ -205,9 +183,10 @@ jobs:
       - name: Run validation script
         run: |
           mkdir -p ./validation
+          # validate_holocene_da.py is baked into the local image
+          # at /app/validate_holocene_da.py via the Dockerfile COPY.
           docker run --rm \
             --entrypoint conda \
-            -v $(pwd)/validate_holocene_da.py:/app/validate_holocene_da.py:ro \
             -v $(pwd)/recon-data:/recons:ro \
             -v $(pwd)/reference_data:/reference_data:ro \
             -v $(pwd)/validation:/validation \
@@ -215,7 +194,7 @@ jobs:
             -e VALIDATION_DIR=/validation \
             -e REFERENCE_DIR=/reference_data \
             -e COMPARISON_JSON=/validation/comparison.json \
-            davidedge/lipd_webapps:holocene_da \
+            presto-holocene_da:local \
             run --no-capture-output -n python3_da python /app/validate_holocene_da.py
 
       - name: Upload validation artifact
@@ -228,7 +207,6 @@ jobs:
   visualize:
     name: Generate Presto Visualization
     needs: [find-latest-run, download-artifact]
-    if: needs.find-latest-run.outputs.has_artifact == 'true'
     uses: DaveEdge1/presto-viz/.github/workflows/presto-viz-reusable.yml@main
     with:
       reconstruction_id: HoloceneDA_Run_${{ needs.find-latest-run.outputs.run_number }}_Reviz_${{ github.run_number }}
