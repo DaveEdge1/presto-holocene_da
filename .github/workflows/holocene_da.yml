@@ -3,8 +3,7 @@ name: Holocene DA Reconstruction
 on:
   push:
     paths:
-      - 'query_params.json'         # server commits this LAST so all files are present
-      - 'config/user_config.yml'    # re-run reconstruction when config changes
+      - 'query_params.json'   # not in template; server commits this LAST so all files are present
   workflow_dispatch:
     inputs:
       unique_id:
@@ -24,8 +23,6 @@ jobs:
     timeout-minutes: 200
     permissions:
       contents: read
-    outputs:
-      skipped: ${{ steps.pathway.outputs.skip }}
 
     steps:
       - name: Checkout repository
@@ -35,13 +32,6 @@ jobs:
       # Priority order:
       #   1. query_params.json in repo  — server-committed (push trigger pathway)
       #   2. lipd_query_json input      — manual workflow_dispatch
-      #
-      # If neither is present, this is almost certainly the initial scaffold
-      # commit during recon-repo creation: the PReSto server commits
-      # config/user_config.yml first (which now triggers this workflow) and
-      # follows with a second commit that adds query_params.json. We skip
-      # the rest of the job with success — the follow-up push will fire a
-      # working run a few seconds later.
       - name: Detect data acquisition pathway
         id: pathway
         run: |
@@ -49,26 +39,21 @@ jobs:
             echo "pathway=github_actions" >> $GITHUB_OUTPUT
             MODE=$(jq -r '.mode' query_params.json)
             echo "mode=$MODE" >> $GITHUB_OUTPUT
-            echo "skip=false" >> $GITHUB_OUTPUT
             echo "Using query_params.json from repo (mode: $MODE)"
           elif [ -n "${{ inputs.lipd_query_json }}" ]; then
             echo "pathway=github_actions" >> $GITHUB_OUTPUT
             echo '${{ inputs.lipd_query_json }}' > query_params.json
             MODE=$(jq -r '.mode' query_params.json)
             echo "mode=$MODE" >> $GITHUB_OUTPUT
-            echo "skip=false" >> $GITHUB_OUTPUT
             echo "Using lipd_query_json input (mode: $MODE)"
           else
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "No query_params.json or lipd_query_json present."
-            echo "Likely the initial scaffold commit during recon-repo setup —"
-            echo "the server's follow-up commit will retrigger this workflow."
-            echo "Skipping the rest of this job with success."
+            echo "ERROR: No data source found (no query_params.json, no lipd_query_json)"
+            exit 1
           fi
 
       # ARCHIVED PATHWAY: Download pickle directly from lipdverse
       - name: Download archived compilation
-        if: steps.pathway.outputs.skip != 'true' && steps.pathway.outputs.mode == 'archived'
+        if: steps.pathway.outputs.mode == 'archived'
         run: |
           COMPILATION=$(jq -r '.compilation' query_params.json)
           VERSION=$(jq -r '.version' query_params.json)
@@ -85,7 +70,7 @@ jobs:
 
       # FILTERED PATHWAY: Run lipdGenerator to produce .lpd files + legacy pickle
       - name: Generate LiPD data from query
-        if: steps.pathway.outputs.skip != 'true' && steps.pathway.outputs.mode == 'filtered'
+        if: steps.pathway.outputs.mode == 'filtered'
         run: |
           echo "Querying lipdverse and generating LiPD data using lipdGenerator container..."
           mkdir -p lipd_output
@@ -105,7 +90,6 @@ jobs:
           ls -lh lipd_legacy.pkl
 
       - name: Verify proxy data
-        if: steps.pathway.outputs.skip != 'true'
         run: |
           if [ -f lipd_legacy.pkl ]; then
             echo "Proxy data ready"
@@ -116,7 +100,6 @@ jobs:
           fi
 
       - name: Upload proxy data artifact
-        if: steps.pathway.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: holocene-da-proxy-data-${{ github.run_id }}
@@ -128,7 +111,6 @@ jobs:
   # changes are needed — no need to redo data generation.
   reconstruct:
     needs: prepare-data
-    if: needs.prepare-data.outputs.skipped != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     permissions:
@@ -143,8 +125,11 @@ jobs:
         with:
           name: holocene-da-proxy-data-${{ github.run_id }}
 
-      - name: Pull Docker image
-        run: docker pull davidedge/lipd_webapps:holocene_da
+      - name: Build patched container image
+        # Layers scripts/ over davidedge/lipd_webapps:holocene_da via the
+        # Dockerfile at repo root. The FROM layer is cached on the runner
+        # so only the COPY step rebuilds (≪ 1 sec).
+        run: docker build -t presto-holocene_da:local .
 
       - name: Create results directory
         run: mkdir -p ./results
@@ -196,21 +181,12 @@ jobs:
           echo "Config file:"
           cat config/user_config.yml
           echo ""
-          # If the repo ships a patched da_main_code.py at the root, mount
-          # it over the container's copy. Lets us deploy memory/perf fixes
-          # without rebuilding davidedge/lipd_webapps:holocene_da.
-          DA_PATCH_MOUNT=""
-          if [ -f da_main_code.py ]; then
-            echo "Mounting patched da_main_code.py from repo root"
-            DA_PATCH_MOUNT="-v $(pwd)/da_main_code.py:/app/da_main_code.py:ro"
-          fi
           docker run --rm \
             -v $(pwd)/lipd_legacy.pkl:/proxies/temp12k/Temp12k1_0_2.pkl:ro \
             -v $(pwd)/config/user_config.yml:/config_default.yml:ro \
             -v $(pwd)/models:/models \
             -v $(pwd)/results:/results \
-            ${DA_PATCH_MOUNT} \
-            davidedge/lipd_webapps:holocene_da
+            presto-holocene_da:local
 
       - name: Verify reconstruction results
         run: |
