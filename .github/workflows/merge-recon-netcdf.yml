@@ -1,0 +1,111 @@
+name: Merge Reconstruction NetCDF
+
+# Reassembles a multi-part Holocene DA reconstruction NetCDF from a
+# release. release-recon.yml splits any NetCDF that exceeds GitHub's
+# 2 GiB release-asset cap (even after xz compression) along its record
+# dimension into `*.part<i>of<N>.nc` pieces. This workflow downloads
+# those pieces from a release, concatenates them with `ncrcat` (NCO),
+# and uploads the merged NetCDF as a workflow artifact for download.
+#
+# Run manually via the Actions tab → "Merge Reconstruction NetCDF" →
+# "Run workflow", optionally passing a release tag (defaults to the
+# latest `recon-*` release). Once the run finishes, download the
+# `merged-<tag>` artifact from the run's summary page.
+#
+# Local equivalent (no workflow needed):
+#   gh release download recon-XXXXX --pattern '*.part*of*.nc' --dir parts
+#   ncrcat -h -O parts/*.part*of*.nc merged.nc
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to merge (default: latest recon-* release)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    name: Merge multi-part NetCDF
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve release tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            TAG="${{ inputs.release_tag }}"
+          else
+            TAG=$(gh release list --repo "${{ github.repository }}" --limit 50 \
+              --json tagName --jq '.[] | .tagName' \
+              | grep -E '^recon-' | head -n1)
+          fi
+          if [ -z "$TAG" ]; then
+            echo "ERROR: no release tag could be resolved (no recon-* releases?)"
+            exit 1
+          fi
+          echo "Using release tag: $TAG"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Install NCO
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nco
+
+      - name: Download multi-part assets from release
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p ./parts
+          gh release download "${{ steps.resolve.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern '*.part*of*.nc' \
+            --dir ./parts || true
+          echo "Downloaded parts:"
+          ls -lh ./parts/ || true
+          if [ -z "$(ls -A ./parts/ 2>/dev/null)" ]; then
+            echo "No multi-part NetCDFs in release ${{ steps.resolve.outputs.tag }} — nothing to merge."
+            echo "found=false" >> $GITHUB_OUTPUT
+          else
+            echo "found=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Concatenate parts via ncrcat
+        if: steps.download.outputs.found == 'true'
+        run: |
+          mkdir -p ./merged
+          # Group parts by their base name (everything before
+          # `.part<i>of<N>.nc`). A release will normally have at most one
+          # multi-part NetCDF, but the loop handles the general case.
+          declare -A SEEN
+          for f in ./parts/*.part*of*.nc; do
+            [ -f "$f" ] || continue
+            bn=$(basename "$f")
+            base=$(echo "$bn" | sed -E 's/\.part[0-9]+of[0-9]+\.nc$//')
+            SEEN["$base"]=1
+          done
+          for base in "${!SEEN[@]}"; do
+            echo "Merging parts of: $base"
+            # Version-sort so part1, part2, ..., part10 concat in numeric
+            # order. ncrcat appends along the record dim of each input,
+            # which release-recon.yml ensured is the split dim.
+            mapfile -t ORDERED < <(ls "./parts/${base}".part*of*.nc | sort -V)
+            echo "  Concatenation order:"
+            printf '    %s\n' "${ORDERED[@]}"
+            ncrcat -h -O "${ORDERED[@]}" "./merged/${base}.nc"
+            ls -lh "./merged/${base}.nc"
+          done
+
+      - name: Upload merged NetCDF as artifact
+        if: steps.download.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-${{ steps.resolve.outputs.tag }}
+          path: ./merged/
+          retention-days: 30

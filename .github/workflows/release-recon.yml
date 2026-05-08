@@ -104,39 +104,103 @@ jobs:
           echo "Recon contents:"
           ls -lh ./bundle/results/
 
-      - name: Compress oversized NetCDFs and quarantine assets above the cap
+      - name: Fit oversized NetCDFs under the 2 GiB release-asset cap
         if: steps.existing.outputs.skip != 'true'
         run: |
-          # GitHub release assets are capped at 2 GiB per file. Any larger
-          # NetCDF gets xz-compressed in place (climate data typically
-          # shrinks 2-5x). Consumers run `xz -d file.nc.xz` to decompress.
-          # If a file is *still* over the cap after compression, quarantine
-          # it so the release can still be created with the remaining
-          # assets — the release notes will flag the skipped file.
+          # GitHub release assets are capped at 2 GiB per file. We try in
+          # order:
+          #   1. xz compression. Climate NetCDFs sometimes shrink 2-5x and
+          #      we can ship a single .nc.xz; consumers run `xz -d` to
+          #      decompress.
+          #   2. If xz isn't enough (some Holocene reconstructions are
+          #      already near-incompressible — ~17% gain), split the raw
+          #      .nc along its record dim into N pieces using ncks.
+          #      Pieces target 1.75 GiB to stay safely under the cap, and
+          #      the companion `merge-recon-netcdf.yml` workflow
+          #      reassembles them via ncrcat.
+          #   3. As a final safety net, quarantine any piece that somehow
+          #      remains over cap and flag it in release notes.
           MAX_BYTES=2147483648
+          TARGET_PIECE_BYTES=1879048192   # 1.75 GiB
           mkdir -p ./bundle/oversized
           : > ./bundle/oversized.list
-          if [ -d ./bundle/results ]; then
-            while IFS= read -r f; do
-              SIZE=$(stat -c%s "$f")
-              if [ "$SIZE" -ge "$MAX_BYTES" ]; then
-                echo "Compressing $(basename "$f") (${SIZE} bytes) with xz..."
-                xz -T0 -6 "$f"
-                ls -lh "${f}.xz"
-              fi
-            done < <(find ./bundle/results -type f -name '*.nc')
 
-            # Final pass: anything still at/above the cap (including any
-            # *.nc.xz that didn't shrink enough) gets quarantined.
-            while IFS= read -r f; do
+          SPLIT_TOOLS_INSTALLED=false
+          install_split_tools() {
+            $SPLIT_TOOLS_INSTALLED && return
+            echo "Installing nco + python3-netcdf4 for NetCDF splitting..."
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq nco python3-netcdf4
+            SPLIT_TOOLS_INSTALLED=true
+          }
+
+          if [ -d ./bundle/results ]; then
+            mapfile -t LARGE_FILES < <(find ./bundle/results -type f -name '*.nc' -size +"${MAX_BYTES}c")
+            for f in "${LARGE_FILES[@]}"; do
               SIZE=$(stat -c%s "$f")
-              if [ "$SIZE" -ge "$MAX_BYTES" ]; then
-                bn=$(basename "$f")
-                echo "Quarantining ${bn} (${SIZE} bytes) — exceeds release-asset cap"
-                printf '%s\t%s\n' "$bn" "$SIZE" >> ./bundle/oversized.list
-                mv "$f" ./bundle/oversized/
+              echo "==> $(basename "$f"): ${SIZE} bytes — exceeds 2 GiB cap. Trying xz..."
+              # -k keeps the original so we can fall back to splitting it
+              # if compression isn't enough.
+              xz -T0 -6 -k "$f"
+              XZ_SIZE=$(stat -c%s "${f}.xz")
+              if [ "$XZ_SIZE" -lt "$MAX_BYTES" ]; then
+                echo "    xz -> ${XZ_SIZE} bytes; keeping .xz, removing raw."
+                rm "$f"
+                continue
               fi
-            done < <(find ./bundle/results -type f)
+
+              echo "    xz -> ${XZ_SIZE} bytes still over cap. Splitting raw .nc..."
+              rm "${f}.xz"
+              install_split_tools
+
+              N_PIECES=$(( (SIZE + TARGET_PIECE_BYTES - 1) / TARGET_PIECE_BYTES ))
+              # Discover the record dim (or longest time-like dim) and length.
+              read SPLIT_DIM SPLIT_LEN < <(python3 - "$f" <<'PYEOF'
+          import sys
+          import netCDF4 as nc
+          ds = nc.Dataset(sys.argv[1])
+          unlim = [d for d in ds.dimensions if ds.dimensions[d].isunlimited()]
+          if unlim:
+              split_dim = unlim[0]
+          else:
+              candidates = sorted(
+                  ds.dimensions.keys(),
+                  key=lambda d: ds.dimensions[d].size,
+                  reverse=True,
+              )
+              for c in candidates:
+                  if c.lower() in ("time", "age", "ages", "years", "time_da", "ages_da"):
+                      split_dim = c
+                      break
+              else:
+                  split_dim = candidates[0]
+          print(split_dim, ds.dimensions[split_dim].size)
+          PYEOF
+          )
+              echo "    Splitting along ${SPLIT_DIM} (length ${SPLIT_LEN}) into ${N_PIECES} piece(s)."
+              PER_PIECE=$(( (SPLIT_LEN + N_PIECES - 1) / N_PIECES ))
+              base=$(basename "$f" .nc)
+              dir=$(dirname "$f")
+              for i in $(seq 1 "$N_PIECES"); do
+                start=$(( (i - 1) * PER_PIECE ))
+                end=$(( i * PER_PIECE - 1 ))
+                if [ "$end" -ge "$SPLIT_LEN" ]; then end=$(( SPLIT_LEN - 1 )); fi
+                out="${dir}/${base}.part${i}of${N_PIECES}.nc"
+                echo "    Slice ${SPLIT_DIM}[${start}..${end}] -> $(basename "$out")"
+                # --mk_rec_dmn forces SPLIT_DIM to be the record (unlimited)
+                # dim in the output, so ncrcat on the merge side can
+                # concatenate the pieces along it.
+                ncks -h -O --mk_rec_dmn "$SPLIT_DIM" \
+                  -d "${SPLIT_DIM},${start},${end}" "$f" "$out"
+                PIECE_SIZE=$(stat -c%s "$out")
+                if [ "$PIECE_SIZE" -ge "$MAX_BYTES" ]; then
+                  echo "    WARNING: piece $(basename "$out") is ${PIECE_SIZE} bytes — quarantining."
+                  printf '%s\t%s\n' "$(basename "$out")" "$PIECE_SIZE" >> ./bundle/oversized.list
+                  mv "$out" ./bundle/oversized/
+                fi
+              done
+              rm "$f"
+            done
           fi
           if [ -s ./bundle/oversized.list ]; then
             echo "Quarantined assets:"
@@ -224,8 +288,10 @@ jobs:
           fi
           # List the actual NetCDFs that were captured so the notes match
           # the assets, regardless of how holocene_da named them. Files
-          # exceeding the 2 GiB release-asset cap are xz-compressed; flag
-          # those so consumers know to decompress before reading.
+          # exceeding the 2 GiB release-asset cap are either xz-compressed
+          # or split into pieces; both forms are flagged here so consumers
+          # know whether to decompress with `xz -d` or reassemble with the
+          # `merge-recon-netcdf.yml` workflow (or `ncrcat` locally).
           NC_LIST=""
           if [ -d ./bundle/results ]; then
             shopt -s nullglob
@@ -234,6 +300,9 @@ jobs:
               case "$name" in
                 *.nc.xz)
                   NC_LIST="${NC_LIST}- \`${name}\` — Holocene DA reconstruction NetCDF (xz-compressed; run \`xz -d\` before opening)"$'\n'
+                  ;;
+                *.part*of*.nc)
+                  NC_LIST="${NC_LIST}- \`${name}\` — Holocene DA reconstruction NetCDF (split; reassemble via the \`Merge Reconstruction NetCDF\` workflow or \`ncrcat\`)"$'\n'
                   ;;
                 *)
                   NC_LIST="${NC_LIST}- \`${name}\` — Holocene DA reconstruction NetCDF"$'\n'
@@ -257,6 +326,8 @@ jobs:
             echo ""
             if [ -n "$NC_LIST" ]; then
               printf '%s' "$NC_LIST"
+            elif [ -n "$SKIPPED_LIST" ]; then
+              echo "- *the reconstruction NetCDF was too large to attach — see **Skipped assets** below*"
             else
               echo "- *no reconstruction NetCDF found in the artifact*"
             fi
@@ -265,7 +336,7 @@ jobs:
             echo "- \`query_params.json\`, \`user_config.yml\`, \`cleaning_report.json\`, \`README.md\` — inputs and run-context snapshot"
             if [ -n "$SKIPPED_LIST" ]; then
               echo ""
-              echo "**Skipped assets** — exceeded GitHub's 2 GiB release-asset cap even after xz compression and could not be attached:"
+              echo "**Skipped assets** — exceeded GitHub's 2 GiB release-asset cap even after xz compression and splitting, and could not be attached:"
               echo ""
               printf '%s' "$SKIPPED_LIST"
             fi
