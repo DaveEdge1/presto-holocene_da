@@ -104,13 +104,18 @@ jobs:
           echo "Recon contents:"
           ls -lh ./bundle/results/
 
-      - name: Compress oversized NetCDFs
+      - name: Compress oversized NetCDFs and quarantine assets above the cap
         if: steps.existing.outputs.skip != 'true'
         run: |
           # GitHub release assets are capped at 2 GiB per file. Any larger
           # NetCDF gets xz-compressed in place (climate data typically
           # shrinks 2-5x). Consumers run `xz -d file.nc.xz` to decompress.
+          # If a file is *still* over the cap after compression, quarantine
+          # it so the release can still be created with the remaining
+          # assets — the release notes will flag the skipped file.
           MAX_BYTES=2147483648
+          mkdir -p ./bundle/oversized
+          : > ./bundle/oversized.list
           if [ -d ./bundle/results ]; then
             while IFS= read -r f; do
               SIZE=$(stat -c%s "$f")
@@ -120,6 +125,22 @@ jobs:
                 ls -lh "${f}.xz"
               fi
             done < <(find ./bundle/results -type f -name '*.nc')
+
+            # Final pass: anything still at/above the cap (including any
+            # *.nc.xz that didn't shrink enough) gets quarantined.
+            while IFS= read -r f; do
+              SIZE=$(stat -c%s "$f")
+              if [ "$SIZE" -ge "$MAX_BYTES" ]; then
+                bn=$(basename "$f")
+                echo "Quarantining ${bn} (${SIZE} bytes) — exceeds release-asset cap"
+                printf '%s\t%s\n' "$bn" "$SIZE" >> ./bundle/oversized.list
+                mv "$f" ./bundle/oversized/
+              fi
+            done < <(find ./bundle/results -type f)
+          fi
+          if [ -s ./bundle/oversized.list ]; then
+            echo "Quarantined assets:"
+            cat ./bundle/oversized.list
           fi
 
       - name: Download proxy database artifact
@@ -220,6 +241,15 @@ jobs:
               esac
             done
           fi
+          # Files that exceeded the 2 GiB release-asset cap even after xz —
+          # surfaced here so consumers know the release is incomplete.
+          SKIPPED_LIST=""
+          if [ -s ./bundle/oversized.list ]; then
+            while IFS=$'\t' read -r name size; do
+              gib=$(awk -v s="$size" 'BEGIN { printf "%.2f", s/1073741824 }')
+              SKIPPED_LIST="${SKIPPED_LIST}- \`${name}\` (${gib} GiB)"$'\n'
+            done < ./bundle/oversized.list
+          fi
           {
             echo "Reconstruction snapshot from holocene_da run [#${{ steps.resolve.outputs.recon_run_number }}](${RUN_URL})."
             echo ""
@@ -233,6 +263,12 @@ jobs:
             echo "${PROXY_LINE}"
             echo "- \`validation.tar.gz\` — full validation page (HTML + plots) and metrics"
             echo "- \`query_params.json\`, \`user_config.yml\`, \`cleaning_report.json\`, \`README.md\` — inputs and run-context snapshot"
+            if [ -n "$SKIPPED_LIST" ]; then
+              echo ""
+              echo "**Skipped assets** — exceeded GitHub's 2 GiB release-asset cap even after xz compression and could not be attached:"
+              echo ""
+              printf '%s' "$SKIPPED_LIST"
+            fi
             echo ""
             echo "**Live validation page:** [${PAGES_URL}/validation/index.html](${PAGES_URL}/validation/index.html)"
             echo ""
