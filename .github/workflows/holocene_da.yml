@@ -120,7 +120,8 @@ jobs:
             citations /data/lipd_legacy.pkl /citations_out \
             --title="Holocene DA Reconstruction $RECON_ID" \
             --url="https://github.com/${{ github.repository }}" \
-            --unique-id="$RECON_ID"
+            --unique-id="$RECON_ID" \
+            --author="${{ github.repository_owner }}"
           ls -lh citations_out/ 2>/dev/null || true
 
       - name: Commit citation files to repository
