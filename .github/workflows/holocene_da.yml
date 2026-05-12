@@ -109,18 +109,18 @@ jobs:
 
       - name: Generate citation files
         run: |
-          UID="${{ inputs.unique_id }}"
-          [ -z "$UID" ] && UID=$(jq -r '.uniqueID // empty' query_params.json 2>/dev/null || echo "")
-          [ -z "$UID" ] && UID="${{ github.run_id }}"
+          RECON_ID="${{ inputs.unique_id }}"
+          [ -z "$RECON_ID" ] && RECON_ID=$(jq -r '.uniqueID // empty' query_params.json 2>/dev/null || echo "")
+          [ -z "$RECON_ID" ] && RECON_ID="${{ github.run_id }}"
           mkdir -p citations_out
           docker run --rm \
             -v "$(pwd)/lipd_legacy.pkl:/data/lipd_legacy.pkl:ro" \
             -v "$(pwd)/citations_out:/citations_out" \
             davidedge/lipd_webapps:lipdGenerator \
             citations /data/lipd_legacy.pkl /citations_out \
-            --title="Holocene DA Reconstruction $UID" \
+            --title="Holocene DA Reconstruction $RECON_ID" \
             --url="https://github.com/${{ github.repository }}" \
-            --unique-id="$UID"
+            --unique-id="$RECON_ID"
           ls -lh citations_out/ 2>/dev/null || true
 
       - name: Commit citation files to repository
