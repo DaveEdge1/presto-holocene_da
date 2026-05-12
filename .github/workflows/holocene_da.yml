@@ -113,31 +113,45 @@ jobs:
           [ -z "$RECON_ID" ] && RECON_ID=$(jq -r '.uniqueID // empty' query_params.json 2>/dev/null || echo "")
           [ -z "$RECON_ID" ] && RECON_ID="${{ github.run_id }}"
           mkdir -p citations_out
+
+          # If the repo already has a curated CITATION.cff (the platform-level
+          # CFF in the holocene_da template), merge a data-source addendum into
+          # it instead of overwriting.
+          MERGE_FLAG=""
+          EXTRA_MOUNT=""
+          if [ -f CITATION.cff ]; then
+            EXTRA_MOUNT="-v $(pwd)/CITATION.cff:/existing_cff/CITATION.cff:ro"
+            MERGE_FLAG="--merge-cff=/existing_cff/CITATION.cff"
+            echo "Existing CITATION.cff detected — will merge addendum"
+          fi
+
           docker run --rm \
             -v "$(pwd)/lipd_legacy.pkl:/data/lipd_legacy.pkl:ro" \
             -v "$(pwd)/citations_out:/citations_out" \
+            $EXTRA_MOUNT \
             davidedge/lipd_webapps:lipdGenerator \
             citations /data/lipd_legacy.pkl /citations_out \
             --title="Holocene DA Reconstruction $RECON_ID" \
             --url="https://github.com/${{ github.repository }}" \
             --unique-id="$RECON_ID" \
-            --author="${{ github.repository_owner }}"
+            --author="${{ github.repository_owner }}" \
+            $MERGE_FLAG
           ls -lh citations_out/ 2>/dev/null || true
 
       - name: Commit citation files to repository
         run: |
-          if [ ! -f citations_out/references.bib ] && [ ! -f citations_out/CITATION.cff ]; then
+          if [ ! -f citations_out/data_references.bib ] && [ ! -f citations_out/CITATION.cff ]; then
             echo "No citation files generated; nothing to commit"
             exit 0
           fi
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
-          [ -f citations_out/references.bib ] && cp citations_out/references.bib references.bib && git add references.bib
-          [ -f citations_out/CITATION.cff ]   && cp citations_out/CITATION.cff   CITATION.cff   && git add CITATION.cff
+          [ -f citations_out/data_references.bib ] && cp citations_out/data_references.bib data_references.bib && git add data_references.bib
+          [ -f citations_out/CITATION.cff ]        && cp citations_out/CITATION.cff        CITATION.cff        && git add CITATION.cff
           if git diff --staged --quiet; then
             echo "No citation file changes to commit"
           else
-            git commit -m "Add citations for Holocene DA reconstruction ${{ github.run_id }}"
+            git commit -m "Add data citations for Holocene DA reconstruction ${{ github.run_id }}"
             # Retry on push race — reconstruct job may push results before/during this commit.
             for i in 1 2 3; do
               git pull --rebase origin "${{ github.ref_name }}" && git push && break || sleep $((i*5))
