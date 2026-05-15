@@ -90,26 +90,6 @@ jobs:
           echo "lipd_legacy.pkl ready:"
           ls -lh lipd_legacy.pkl
 
-      # Strip non-requested TSIDs from each retained dataset's paleoData.
-      # lipdGenerator's filtered pickle keeps the full parent LiPD for any
-      # dataset containing ≥1 requested TSID, so sibling columns leak
-      # through. Without this, da_load_proxies.py assimilates every
-      # temperature TSID in those datasets, not the user's selection
-      # (e.g. 1144 proxies loaded for a 711-TSID query in run 25933483881).
-      - name: Filter pickle to requested TSIDs
-        if: steps.pathway.outputs.mode == 'filtered'
-        run: |
-          docker run --rm \
-            --entrypoint python \
-            -v $(pwd)/lipd_legacy.pkl:/data/in.pkl:ro \
-            -v $(pwd)/scripts/filter_tsids.py:/app/filter_tsids.py:ro \
-            -v $(pwd)/query_params.json:/data/query.json:ro \
-            -v $(pwd):/out \
-            davidedge/lipd_webapps:lipdGenerator \
-            /app/filter_tsids.py /data/in.pkl /out/lipd_legacy.filtered.pkl /data/query.json
-          mv lipd_legacy.filtered.pkl lipd_legacy.pkl
-          ls -lh lipd_legacy.pkl
-
       - name: Verify proxy data
         run: |
           if [ -f lipd_legacy.pkl ]; then
