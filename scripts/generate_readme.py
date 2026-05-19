@@ -130,18 +130,39 @@ def _format_archives(value):
     return str(value)
 
 
-def summarize_cleaning(report):
-    """Aggregate a PReSto cleaning_report.json (list of duplicate groups).
-
-    Returns a dict with `groups`, `considered`, `kept`, `removed`, and
-    `top_reason` (string or None) — or None if the report is unrecognized.
+def _normalize_cleaning_report(report):
+    """Accept both shapes: bare list of groups (legacy) or
+    {groups: [...], datasetNotes?: {...}} (current). Returns
+    (groups_list, dataset_notes_dict_or_None).
     """
-    if not isinstance(report, list) or not report:
+    if isinstance(report, list):
+        return report, None
+    if isinstance(report, dict):
+        groups = report.get("groups")
+        if not isinstance(groups, list):
+            return [], None
+        ds_notes = report.get("datasetNotes")
+        if not isinstance(ds_notes, dict):
+            ds_notes = None
+        return groups, ds_notes
+    return [], None
+
+
+def summarize_cleaning(report):
+    """Aggregate a PReSto cleaning_report.json.
+
+    Accepts either the legacy bare-list form or the current
+    {groups, datasetNotes?} wrapper. Returns a dict with `groups`,
+    `considered`, `kept`, `removed`, `top_reason` (str|None), and
+    `dataset_notes` (dict|None) — or None if the report is unrecognized.
+    """
+    groups_list, dataset_notes = _normalize_cleaning_report(report)
+    if not groups_list and not dataset_notes:
         return None
-    groups = len(report)
+    groups = len(groups_list)
     considered = kept = removed = 0
     removals_by_reason = {}
-    for group in report:
+    for group in groups_list:
         if not isinstance(group, dict):
             continue
         records = group.get("records") or []
@@ -170,6 +191,7 @@ def summarize_cleaning(report):
         "kept": kept,
         "removed": removed,
         "top_reason": top_reason,
+        "dataset_notes": dataset_notes,
     }
 
 
@@ -296,6 +318,26 @@ def build_readme(query, configs, *, cleaning_report=None,
     lines.append("")
     lines.append("(See `query_params.json` for the full TSID list.)")
     lines.append("")
+
+    dataset_notes = (cleaning_summary or {}).get("dataset_notes")
+    if dataset_notes:
+        lines.append("### Dataset-level notes")
+        lines.append("")
+        lines.append(
+            "Captured during the data-cleaning step — a mix of "
+            "user-typed commentary on individual datasets and "
+            "automated audit lines from the duplicate-detection "
+            "auto-picker."
+        )
+        lines.append("")
+        for ds_name in sorted(dataset_notes.keys()):
+            note = (dataset_notes[ds_name] or "").strip()
+            if not note:
+                continue
+            lines.append(f"- **{ds_name}**")
+            for line in note.splitlines():
+                lines.append(f"  > {line}" if line.strip() else "  >")
+        lines.append("")
 
     lines.append("## Results")
     lines.append("")
