@@ -92,8 +92,7 @@ def load_proxies(options):
                     print('Fixing GISP2 ages:',all_ts_12k[i]['paleoData_variableName'],', Index:',i)
                     all_ts_12k[i]['age'] = gisp2_ages
             #
-            proxy_ts_temp12k = lipd.filterTs(all_ts_12k,      'paleoData_inCompilation == Temp12k')
-            proxy_ts_temp12k = lipd.filterTs(proxy_ts_temp12k,'paleoData_units == degC')
+            proxy_ts_temp12k = lipd.filterTs(all_ts_12k,'paleoData_units == degC')
             if options['reconstruction_type'] == 'absolute': proxy_ts_temp12k = lipd.filterTs(proxy_ts_temp12k,'paleoData_datum == abs')
             #
             proxy_ts = proxy_ts + proxy_ts_temp12k
