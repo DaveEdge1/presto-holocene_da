@@ -196,7 +196,7 @@ def process_proxies(proxy_ts,collection_all,options):
     proxy_data['seasonality_array'] = {}
     #
     # Loop through proxies, saving the necessary values to common variables.
-    no_ref_data = 0; missing_uncertainty = 0; missing_uncertainty_value = np.nan
+    no_ref_data = 0; missing_uncertainty = 0; missing_uncertainty_value = 3.0  # °C RMSE fallback (→ 9.0 °C² MSE); avoids dropping records the pickle doesn't carry temperature12kUncertainty for
     for i in range(n_proxies):
         #
         # Get proxy data
@@ -298,7 +298,7 @@ def process_proxies(proxy_ts,collection_all,options):
         proxy_data['resolution_binned'][i,:] = proxy_res_12ka
         #
         # Get proxy metdata
-        missing_uncertainty_value = np.nan
+        missing_uncertainty_value = 3.0  # °C RMSE fallback (→ 9.0 °C² MSE); avoids dropping records the pickle doesn't carry temperature12kUncertainty for
         proxy_lat                 = proxy_ts[i]['geo_meanLat']
         proxy_lon                 = proxy_ts[i]['geo_meanLon']
         _interp = proxy_ts[i].get('paleoData_interpretation', [{}])
