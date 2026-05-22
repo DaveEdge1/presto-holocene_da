@@ -83,6 +83,26 @@ def load_proxies(options):
             # Extract the time series and use only those which are in Temp12k and in units of degC
             all_ts_12k = lipd.extractTs(proxies_all_12k)
             #
+            # Derive 'age' (yr BP) from 'year' for records that lack an age axis.
+            # Temp12k records carry 'age' natively; records pulled in from other
+            # compilations (CoralHydro2k, iso2k, etc.) often only have 'year'.
+            # AD year -> BP: age = 1950 - year. BP year -> just rename.
+            for r in all_ts_12k:
+                if 'age' in r or 'year' not in r:
+                    continue
+                year_vals = r['year']
+                if year_vals is None:
+                    continue
+                try:
+                    year_arr = np.array(year_vals, dtype=float)
+                except (TypeError, ValueError):
+                    continue
+                units = str(r.get('yearUnits', '')).strip().lower()
+                if 'bp' in units:
+                    r['age'] = year_arr.tolist()
+                else:
+                    r['age'] = (1950.0 - year_arr).tolist()
+            #
             # Fix the GISP2 ages - Note: this is a temporary fix, since lipd isn't loading the right ages.
             for i in range(len(all_ts_12k)):
                 if (all_ts_12k[i]['dataSetName'] == 'Alley.GISP2.2000') and (all_ts_12k[i]['paleoData_variableName'] == 'age'): gisp2_ages = all_ts_12k[i]['paleoData_values']
@@ -94,6 +114,10 @@ def load_proxies(options):
             #
             proxy_ts_temp12k = lipd.filterTs(all_ts_12k,'paleoData_units == degC')
             if options['reconstruction_type'] == 'absolute': proxy_ts_temp12k = lipd.filterTs(proxy_ts_temp12k,'paleoData_datum == abs')
+            # Drop records that still lack 'age' (no year axis either, or
+            # unparseable). Without this guard, process_proxies crashes on
+            # the first such record at np.array(record['age']).astype(float).
+            proxy_ts_temp12k = [r for r in proxy_ts_temp12k if 'age' in r]
             #
             proxy_ts = proxy_ts + proxy_ts_temp12k
             collection_all = collection_all + ([proxy_dataset] * len(proxy_ts_temp12k))
