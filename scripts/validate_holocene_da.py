@@ -296,50 +296,76 @@ if references:
                     dpi=150, bbox_inches='tight')
         plt.close(fig)
 
-# 6ka spatial anomaly map (same style as make_basic_figures.py)
-print('Generating 6ka spatial anomaly map ...')
-ages_anom = [5500, 6500]
-ages_ref = [0, 1000]
-ind_anom = np.where((ages >= ages_anom[0]) & (ages <= ages_anom[1]))[0]
-ind_ref = np.where((ages >= ages_ref[0]) & (ages <= ages_ref[1]))[0]
+# Spatial anomaly map (same style/windows as make_basic_figures.py).
+# Prefer the canonical 6-0.5 ka windows; if the reconstructed range doesn't
+# cover them, fall back to oldest-minus-youngest of the available range so the
+# recon's own map still renders instead of an all-NaN blank. The published
+# 6 ka reference/proxy comparisons (sections 4b/4c) stay gated on genuine 6 ka
+# coverage via `adaptive`, since those references are 6 ka-specific.
+print('Generating spatial anomaly map ...')
+CANONICAL_ANOM = [5500, 6500]
+CANONICAL_REF = [0, 1000]
+ind_anom = np.where((ages >= CANONICAL_ANOM[0]) & (ages <= CANONICAL_ANOM[1]))[0]
+ind_ref = np.where((ages >= CANONICAL_REF[0]) & (ages <= CANONICAL_REF[1]))[0]
+adaptive = not (len(ind_anom) > 0 and len(ind_ref) > 0)
 
-tas_change = None
-geo_mean = float('nan')
-if len(ind_anom) > 0 and len(ind_ref) > 0:
-    tas_change = np.nanmean(tas_mean[ind_anom, :, :], axis=0) \
-        - np.nanmean(tas_mean[ind_ref, :, :], axis=0)
-
-    # Area-weighted geo mean
-    wgts = np.cos(np.deg2rad(lat))[:, np.newaxis]
-    geo_mean = float(np.nansum(tas_change * wgts) / np.nansum(wgts * np.isfinite(tas_change)))
-
-    tas_cyclic, lon_cyclic = cutil.add_cyclic_point(tas_change, coord=lon)
-    fig = plt.figure(figsize=(12, 6))
-    ax = plt.subplot(1, 1, 1, projection=ccrs.Robinson())
-    ax.set_global()
-    cf = ax.contourf(lon_cyclic, lat, tas_cyclic, np.arange(-1, 1.1, 0.1),
-                     extend='both', cmap='bwr', transform=ccrs.PlateCarree())
-    ax.coastlines(linewidth=0.6)
-    ax.gridlines(color='k', linewidth=0.5, linestyle=(0, (1, 5)))
-    cb = plt.colorbar(cf, ax=ax, orientation='horizontal',
-                      fraction=0.07, pad=0.04)
-    cb.set_label('\u0394T (\u00b0C)', fontsize=12)
-    ax.set_title(f'6 ka Anomaly: mean of {ages_anom[0]}\u2013{ages_anom[1]} BP '
-                 f'minus {ages_ref[0]}\u2013{ages_ref[1]} BP\n'
-                 f'Area-weighted global mean \u0394T = {geo_mean:.3f}\u00b0C',
-                 fontsize=12)
-    fig.savefig(os.path.join(VALIDATION_DIR, 'spatial_anomaly_6ka.png'),
-                dpi=150, bbox_inches='tight')
-    plt.close(fig)
+if adaptive:
+    a_min, a_max = float(np.min(ages)), float(np.max(ages))
+    span = a_max - a_min
+    res = float(np.min(np.diff(np.sort(ages)))) if len(ages) > 1 else span
+    width = min(max(span * 0.15, res), span * 0.4) if span > 0 else 0.0
+    ages_ref = [a_min, a_min + width]    # most-recent portion
+    ages_anom = [a_max - width, a_max]   # oldest portion
+    ind_ref = np.where((ages >= ages_ref[0]) & (ages <= ages_ref[1]))[0]
+    ind_anom = np.where((ages >= ages_anom[0]) & (ages <= ages_anom[1]))[0]
+    if len(ind_ref) == 0:
+        ind_ref = np.array([int(np.argmin(ages))])
+    if len(ind_anom) == 0:
+        ind_anom = np.array([int(np.argmax(ages))])
+    win_label = ('{:.2f}\u2013{:.2f} ka \u2212 {:.2f}\u2013{:.2f} ka'.format(
+        ages_anom[0] / 1000., ages_anom[1] / 1000.,
+        ages_ref[0] / 1000., ages_ref[1] / 1000.))
+    print('  WARNING: reconstruction ({:.0f}-{:.0f} BP) does not cover the 6-0.5 ka '
+          'windows; rendering adaptive anomaly {:.0f}-{:.0f} BP minus {:.0f}-{:.0f} BP. '
+          '6 ka reference/proxy comparisons will be skipped.'.format(
+              a_min, a_max, ages_anom[0], ages_anom[1], ages_ref[0], ages_ref[1]))
 else:
-    print('  WARNING: reconstruction does not cover 6ka baseline windows, skipping map')
+    ages_anom = CANONICAL_ANOM
+    ages_ref = CANONICAL_REF
+    win_label = '6 ka'
+
+tas_change = np.nanmean(tas_mean[ind_anom, :, :], axis=0) \
+    - np.nanmean(tas_mean[ind_ref, :, :], axis=0)
+
+# Area-weighted geo mean
+wgts = np.cos(np.deg2rad(lat))[:, np.newaxis]
+geo_mean = float(np.nansum(tas_change * wgts) / np.nansum(wgts * np.isfinite(tas_change)))
+
+tas_cyclic, lon_cyclic = cutil.add_cyclic_point(tas_change, coord=lon)
+fig = plt.figure(figsize=(12, 6))
+ax = plt.subplot(1, 1, 1, projection=ccrs.Robinson())
+ax.set_global()
+cf = ax.contourf(lon_cyclic, lat, tas_cyclic, np.arange(-1, 1.1, 0.1),
+                 extend='both', cmap='bwr', transform=ccrs.PlateCarree())
+ax.coastlines(linewidth=0.6)
+ax.gridlines(color='k', linewidth=0.5, linestyle=(0, (1, 5)))
+cb = plt.colorbar(cf, ax=ax, orientation='horizontal',
+                  fraction=0.07, pad=0.04)
+cb.set_label('\u0394T (\u00b0C)', fontsize=12)
+ax.set_title(f'{win_label} Anomaly: mean of {ages_anom[0]:.0f}\u2013{ages_anom[1]:.0f} BP '
+             f'minus {ages_ref[0]:.0f}\u2013{ages_ref[1]:.0f} BP\n'
+             f'Area-weighted global mean \u0394T = {geo_mean:.3f}\u00b0C',
+             fontsize=12)
+fig.savefig(os.path.join(VALIDATION_DIR, 'spatial_anomaly_6ka.png'),
+            dpi=150, bbox_inches='tight')
+plt.close(fig)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4b. Spatial reference comparison (*_6ka_anomaly.nc in REFERENCE_DIR)
 # ═══════════════════════════════════════════════════════════════════════════
 spatial_results = {}
-if tas_change is not None:
+if (tas_change is not None) and (not adaptive):
     sp_paths = sorted(glob.glob(os.path.join(REFERENCE_DIR, '*_6ka_anomaly.nc')))
     if sp_paths:
         print('\nScanning spatial references in {} ...'.format(REFERENCE_DIR))
@@ -428,7 +454,7 @@ if tas_change is not None:
 # ═══════════════════════════════════════════════════════════════════════════
 proxy_results = {}
 proxy_plots = {}
-if tas_change is not None:
+if (tas_change is not None) and (not adaptive):
     pp_paths = sorted(glob.glob(os.path.join(REFERENCE_DIR, '*_proxies.csv')))
     if pp_paths:
         print('\nScanning proxy datasets in {} ...'.format(REFERENCE_DIR))
@@ -748,6 +774,17 @@ if os.path.exists(COMPARISON_JSON):
 # ═══════════════════════════════════════════════════════════════════════════
 print('Generating HTML report ...')
 
+adaptive_note = ''
+if adaptive:
+    adaptive_note = (
+        '<p style="background:#fef3c7;border-left:4px solid #d97706;'
+        'padding:10px 14px;border-radius:6px;color:#92400e;">'
+        '<strong>Note:</strong> this reconstruction does not span the canonical '
+        '6–0.5 ka windows (5500–6500 BP minus 0–1000 BP). The spatial '
+        f'map below uses an adaptive window ({win_label}) derived from the '
+        'reconstructed range, so it is not blank. Published 6 ka reference and '
+        'proxy-site comparisons are omitted because they are specific to 6 ka.</p>')
+
 metric_cards = [
     f'''<div class="metric-card">
       <div class="value">{geo_mean:.3f}</div>
@@ -891,10 +928,11 @@ html = f"""<!DOCTYPE html>
     <tr><th>Reference</th><th>Overlap</th><th>R</th><th>CE</th></tr>
 {table_rows}  </table>
 
-  <h2>Spatial Anomaly at 6 ka</h2>
-  <p>Mean temperature anomaly for {ages_anom[0]}–{ages_anom[1]} BP relative to
-     {ages_ref[0]}–{ages_ref[1]} BP baseline. Robinson projection.</p>
-  <img src="spatial_anomaly_6ka.png" alt="6 ka spatial anomaly map">
+  <h2>Spatial Anomaly at {win_label}</h2>
+  {adaptive_note}
+  <p>Mean temperature anomaly for {ages_anom[0]:.0f}–{ages_anom[1]:.0f} BP relative to
+     {ages_ref[0]:.0f}–{ages_ref[1]:.0f} BP baseline. Robinson projection.</p>
+  <img src="spatial_anomaly_6ka.png" alt="spatial anomaly map">
 
 {spatial_section}
 
