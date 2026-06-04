@@ -13,7 +13,7 @@ customizable template driven by PReSto.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## v0.0.0 - 2026-06-04
 
 ### Added
 - Containerized execution environment (`Dockerfile`,
@@ -55,11 +55,3 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - See the Git commit history for line-level detail of all changes.
 - The upstream commit/version this template is based on is recorded in
   `NOTICE`.
-
-<!--
-RELEASE CHECKLIST (remove once first release is cut):
-1. Move the Unreleased items under a versioned heading, e.g.:
-     ## [1.0.0] - 2026-06-04
-2. Cut a GitHub release so Zenodo mints a DOI.
-3. Add the Zenodo concept DOI to CITATION.cff and the README badge.
--->
