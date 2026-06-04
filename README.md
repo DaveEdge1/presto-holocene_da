@@ -1,4 +1,4 @@
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20546083.svg)](https://doi.org/10.5281/zenodo.20546083)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20546082.svg)](https://doi.org/10.5281/zenodo.20546082)
 
 # PReSto Holocene DA Template
 
