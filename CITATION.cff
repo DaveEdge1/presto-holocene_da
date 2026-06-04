@@ -1,48 +1,78 @@
 cff-version: 1.2.0
-message: "If you use this reconstruction, please cite the references below."
-title: "The Paleoclimate Reconstruction Storehouse (PReSto) platform"
+message: "If you use this software, please cite it using the metadata below."
+title: "PReSto Holocene DA Template"
+abstract: >-
+  A template repository used by PReSto (Paleoclimate Reconstruction
+  Storehouse) to reproduce and customize the Holocene temperature
+  reconstruction of Erb et al. (2022) via GitHub Actions. The workflow
+  acquires proxy observations from LiPDverse, constructs a model prior from
+  transient climate simulations (HadCM3 and TraCE-21ka), and runs offline
+  paleoclimate data assimilation inside containerized environments to
+  reconstruct spatially complete temperature fields over the past 12,000 years.
 type: software
 authors:
-  - family-names: Edge
-    given-names: Dave
-  - family-names: Erb
-    given-names: Michael
-  - family-names: McKay
-    given-names: Nicholas
-  - family-names: Zhu
-    given-names: Feng
-  - family-names: Khider
-    given-names: Deborah
-  - family-names: Emile-Geay
-    given-names: Julien
-  - family-names: Routson
-    given-names: Cody
-doi: 10.5281/zenodo.8274756
-version: alpha-release
-date-released: "2023-08-25"
-url: "https://zenodo.org/record/8274756"
+  - given-names: David
+    family-names: Edge
+    orcid: "https://orcid.org/0000-0001-6938-2850"
+  - given-names: Nicholas
+    family-names: McKay
+    orcid: "https://orcid.org/0000-0003-3598-5113"
+  - given-names: Michael
+    family-names: Erb
+    orcid: "https://orcid.org/0000-0002-1763-2522"
+  - given-names: Julien
+    family-names: Emile-Geay
+    orcid: "https://orcid.org/0000-0001-5920-4751"
+  - given-names: Deborah
+    family-names: Khider
+    orcid: "https://orcid.org/0000-0001-7501-8430"
+repository-code: "https://github.com/DaveEdge1/presto-holocene_da"
+url: "https://paleopresto.com"
+license: GPL-3.0-only
+keywords:
+  - paleoclimate
+  - data assimilation
+  - Holocene
+  - climate reconstruction
+  - reproducibility
+  - LiPD
+# After cutting a GitHub release with the Zenodo integration enabled,
+# replace the placeholder below with the Zenodo CONCEPT DOI (the one that
+# always resolves to the latest version), and set version/date-released.
+# version: "1.0.0"
+# date-released: "2026-MM-DD"
+# identifiers:
+#   - type: doi
+#     value: 10.5281/zenodo.XXXXXXX
+#     description: Concept DOI (always resolves to the latest release)
+# The underlying method paper is listed under `references` (not
+# `preferred-citation`) so that GitHub's "Cite this repository" button
+# credits this software while still pointing users to the paper:
 references:
   - type: article
-    title: "Reconstructing Holocene temperatures in time and space using paleoclimate data assimilation"
+    title: >-
+      Reconstructing Holocene temperatures in time and space using
+      paleoclimate data assimilation
     authors:
-      - family-names: Erb
-        given-names: M. P.
-      - family-names: McKay
-        given-names: N. P.
-      - family-names: Steiger
-        given-names: N.
-      - family-names: Dee
-        given-names: S.
-      - family-names: Bova
-        given-names: S.
-      - family-names: Zhu
-        given-names: F.
-      - family-names: Emile-Geay
-        given-names: J.
-      - family-names: Hakim
-        given-names: G. J.
+      - given-names: Michael
+        family-names: Erb
+      - given-names: Nicholas
+        family-names: McKay
+      - given-names: Nathan
+        family-names: Steiger
+      - given-names: Sylvia
+        family-names: Dee
+      - given-names: Chris
+        family-names: Hancock
+      - given-names: Ruza
+        family-names: Ivanovic
+      - given-names: Lauren
+        family-names: Gregoire
+      - given-names: Paul
+        family-names: Valdes
     journal: "Climate of the Past"
     volume: 18
+    issue: 12
     start: 2599
     end: 2629
     year: 2022

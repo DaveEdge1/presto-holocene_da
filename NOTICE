@@ -1,0 +1,48 @@
+PReSto Holocene DA Template
+===========================
+
+This work is licensed under the GNU General Public License v3.0 (GPL-3.0-only).
+See the LICENSE file for the full license text.
+
+Provenance and modification notice (GPL-3.0 Section 5(a))
+---------------------------------------------------------
+
+This repository is a derivative work based on the Holocene Reconstruction
+code:
+
+    Upstream project: Holocene-Reconstruction/Holocene-code
+    Source:           https://github.com/Holocene-Reconstruction/Holocene-code
+    License:          GNU General Public License v3.0
+
+The upstream code implements the offline paleoclimate data assimilation method
+of Erb et al. (2022). Copyright in the original code remains with its
+respective authors.
+
+This template was modified and extended by David Edge, with contributions from
+Nicholas McKay, Michael Erb, Julien Emile-Geay, and Deborah Khider, beginning
+in 2026, to package the reconstruction as a reproducible, customizable template
+driven by PReSto (Paleoclimate Reconstruction Storehouse). A summary of
+modifications is maintained in CHANGELOG.md; the complete change record is the
+Git commit history of this repository.
+
+    Upstream version this template is based on:
+        commit: dce870bb446a1436ea1246e19334671657fc16f7 (main)
+        date:   2023-03-24
+
+How to cite
+-----------
+
+If you use this software, please cite it using the metadata in CITATION.cff.
+Please also cite the underlying method paper:
+
+    Erb, M., McKay, N., Steiger, N., Dee, S., Hancock, C., Ivanovic, R.,
+    Gregoire, L., and Valdes, P. (2022). Reconstructing Holocene temperatures
+    in time and space using paleoclimate data assimilation. Climate of the
+    Past, 18(12), 2599-2629. https://doi.org/10.5194/cp-18-2599-2022
+
+Warranty
+--------
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.

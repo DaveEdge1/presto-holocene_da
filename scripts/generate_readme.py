@@ -412,6 +412,18 @@ def build_readme(query, configs, *, cleaning_report=None,
     )
     lines.append("")
 
+    lines.append("## License")
+    lines.append("")
+    lines.append(
+        "This repository is a derivative of the GPL-3.0-licensed "
+        "[Holocene-Reconstruction/Holocene-code]"
+        "(https://github.com/Holocene-Reconstruction/Holocene-code) and "
+        "is distributed under the [GNU General Public License v3.0]"
+        "(LICENSE). See [NOTICE](NOTICE) for provenance and modification "
+        "details, and [CITATION.cff](CITATION.cff) for how to cite."
+    )
+    lines.append("")
+
     lines.append("---")
     lines.append(
         "*This README is regenerated automatically by "
