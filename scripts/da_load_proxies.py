@@ -175,8 +175,18 @@ def process_proxies(proxy_ts,collection_all,options):
     age_bounds = np.arange(options['age_range_to_reconstruct'][0],options['age_range_to_reconstruct'][1]+1,options['time_resolution']) - 0.5
     age_centers = (age_bounds[:-1]+age_bounds[1:])/2
     #
-    # Set the maximum proxy resolution
-    max_res_value = int(options['maximum_resolution']/options['time_resolution'])
+    # Set the maximum proxy resolution (in units of time_resolution bins).
+    # Clamp to a minimum of 1: when maximum_resolution < time_resolution (e.g.
+    # maximum_resolution=200 with time_resolution=1000) the ratio floors to 0,
+    # which would clamp EVERY proxy resolution to 0. da_psms then builds a
+    # length-0 running-mean window and np.convolve raises "v cannot be empty",
+    # killing the whole reconstruction. A coarse bin can resolve at most 1 bin,
+    # so 1 is the correct floor.
+    max_res_value = max(1, int(options['maximum_resolution']/options['time_resolution']))
+    if options['maximum_resolution'] < options['time_resolution']:
+        print('WARNING: maximum_resolution ('+str(options['maximum_resolution'])+
+              ') < time_resolution ('+str(options['time_resolution'])+
+              '); clamping maximum proxy resolution to 1 bin.')
     #
     # Get dimensions
     n_ages    = len(age_centers)
