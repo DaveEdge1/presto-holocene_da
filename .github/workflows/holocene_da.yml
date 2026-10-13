@@ -24,10 +24,35 @@ jobs:
     permissions:
       # Bumped from read → write so citation files can be committed to repo root.
       contents: write
+    outputs:
+      chunks: ${{ steps.chunks.outputs.chunks }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # Each age step of the DA is independent (its own prior window and
+      # proxies), so a long reconstruction can run as parallel jobs over
+      # contiguous age ranges and be concatenated afterwards. Set
+      # presto_age_chunks in config/user_config.yml (default 1). Needed when one
+      # job would pass GitHub's 6 h limit: ~2,700 proxies at 10-yr resolution
+      # take about 7 h on a hosted runner.
+      - name: Plan age chunks
+        id: chunks
+        run: |
+          python3 - <<'EOF' >> $GITHUB_OUTPUT
+          import json, yaml
+          c = yaml.safe_load(open('config/user_config.yml'))
+          lo, hi = c['age_range_to_reconstruct']; res = c['time_resolution']
+          n = max(1, int(c.get('presto_age_chunks') or 1))
+          # A random subset of proxies is drawn per run; chunks would draw differently.
+          if n > 1 and c.get('percent_to_assimilate', 100) < 100:
+              raise SystemExit('presto_age_chunks > 1 needs percent_to_assimilate: 100')
+          steps = (hi - lo) // res
+          edges = [lo + res * round(steps * k / n) for k in range(n + 1)]
+          print('chunks=' + json.dumps([{'i': k + 1, 'n': n, 'lo': edges[k], 'hi': edges[k + 1]} for k in range(n)]))
+          EOF
+          cat $GITHUB_OUTPUT
 
       # Detect which pathway to use.
       # Priority order:
@@ -68,6 +93,15 @@ jobs:
           }
 
           ls -lh lipd_legacy.pkl
+
+      # POOL PATHWAY: a pinned PReSto data pool (paleopresto/presto-recipes
+      # pools/), selected from all of LiPDverse by the Temperature 12k criteria and
+      # deduplicated; fetched and checksum-verified by the fetch-pool action.
+      - name: Fetch PReSto pool bundle
+        if: steps.pathway.outputs.mode == 'bundle'
+        uses: paleopresto/presto-recipes/.github/actions/fetch-pool@pools
+        with:
+          format: pickle
 
       # FILTERED PATHWAY: Run lipdGenerator to produce .lpd files + legacy pickle
       - name: Generate LiPD data from query
@@ -163,10 +197,15 @@ jobs:
   # changes are needed — no need to redo data generation.
   reconstruct:
     needs: prepare-data
+    name: reconstruct (ages ${{ matrix.chunk.lo }}-${{ matrix.chunk.hi }})
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 355
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk: ${{ fromJSON(needs.prepare-data.outputs.chunks) }}
 
     steps:
       - name: Checkout repository
@@ -229,13 +268,20 @@ jobs:
 
       - name: Run Holocene DA reconstruction
         run: |
-          echo "Running Holocene DA reconstruction..."
+          # This chunk's age range; the full range when there is one chunk.
+          python3 - <<'EOF'
+          import yaml
+          c = yaml.safe_load(open('config/user_config.yml'))
+          c['age_range_to_reconstruct'] = [${{ matrix.chunk.lo }}, ${{ matrix.chunk.hi }}]
+          yaml.safe_dump(c, open('chunk_config.yml', 'w'), sort_keys=False)
+          EOF
+          echo "Running Holocene DA reconstruction (chunk ${{ matrix.chunk.i }}/${{ matrix.chunk.n }})..."
           echo "Config file:"
-          cat config/user_config.yml
+          cat chunk_config.yml
           echo ""
           docker run --rm \
             -v $(pwd)/lipd_legacy.pkl:/proxies/temp12k/Temp12k1_0_2.pkl:ro \
-            -v $(pwd)/config/user_config.yml:/config_default.yml:ro \
+            -v $(pwd)/chunk_config.yml:/config_default.yml:ro \
             -v $(pwd)/models:/models \
             -v $(pwd)/results:/results \
             presto-holocene_da:local
@@ -249,6 +295,44 @@ jobs:
             echo "ERROR: No reconstruction results generated"
             exit 1
           fi
+
+      - name: Upload chunk results
+        uses: actions/upload-artifact@v4
+        with:
+          name: holocene-da-chunk-${{ matrix.chunk.i }}-${{ github.run_id }}
+          path: ./results/
+          retention-days: 3
+          compression-level: 0
+
+  # ── Job 3: Assemble the chunks, publish ────────────────────────────────────
+  finalize:
+    needs: reconstruct
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download chunk results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: holocene-da-chunk-*-${{ github.run_id }}
+          path: ./chunks
+
+      - name: Concatenate chunks along age
+        run: |
+          mkdir -p ./results
+          N=$(find chunks -name '*.nc' | wc -l)
+          if [ "$N" -eq 1 ]; then
+            find chunks -name '*.nc' -exec mv {} results/ \;
+          else
+            pip install -q xarray netCDF4
+            python3 scripts/merge_age_chunks.py results chunks/*/*.nc
+          fi
+          ls -lh results/
 
       - name: Include config for visualization
         run: |

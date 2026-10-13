@@ -180,15 +180,31 @@ print(' - Number of records with valid values for the chosen experiment: '+str(s
 proxy_ind_with_uncertainty = np.isfinite(proxy_data['uncertainty'])
 print(' - Number of records with uncertainty values: '+str(sum(proxy_ind_with_uncertainty)))
 
-# If requested, select only proxies with certain seasonalities
-#if options['assimilate_selected_seasons']:
-#    proxy_ind_of_seasonality = np.full((n_proxies),False,dtype=bool)
-#    ind_seasons = [i for i, seasontype in enumerate(proxy_data['metadata'][:,5]) if seasontype in options['assimilate_selected_seasons']]
-#    proxy_ind_of_seasonality[ind_seasons] = True
-#    print(' - Number of records with seasonalities '+str(options['assimilate_selected_seasons'])+': '+str(sum(proxy_ind_of_seasonality)))
-#else:
-    
-proxy_ind_of_seasonality = np.full((n_proxies),True,dtype=bool)
+# If requested, select only proxies with certain seasonalities.
+# Erb et al. (2022) assimilate annual, summerOnly and winterOnly records. In
+# Temperature 12k, summer+ and winter+ mark the seasonal reconstructions of a
+# site that also has an annual one, so the filter keeps one record per site.
+# The filter is opt-in (presto_season_filter: true), because these
+# seasonalityGeneral labels are only used consistently within Temperature 12k;
+# PReSto pools choose one record per site and proxy upstream.
+_seasons = options['assimilate_selected_seasons']
+if isinstance(_seasons, str):
+    import ast
+    _seasons = False if _seasons.strip().lower() in ('false', 'none', '') else ast.literal_eval(_seasons)
+_season_filter = str(options.get('presto_season_filter', False)).lower() in ('true', '1', 'yes')
+# Pool records outside Temperature 12k carry other seasonalityGeneral text
+# ('Annual', 'Summer', 'warmest month'); the filter reads the five Temp12k
+# classes case-insensitively and leaves other values eligible.
+_t12k_classes = ('annual', 'summeronly', 'winteronly', 'summer+', 'winter+')
+if _seasons and _season_filter:
+    _wanted = [str(x).lower() for x in _seasons]
+    _sg = [str(x).strip().lower() for x in proxy_data['metadata'][:,5]]
+    proxy_ind_of_seasonality = np.array([g in _wanted or g not in _t12k_classes for g in _sg], dtype=bool)
+    print(' - Number of records with seasonalities '+str(_seasons)+': '+str(sum(proxy_ind_of_seasonality))+
+          ' (of which '+str(sum(g not in _t12k_classes for g in _sg))+' with other seasonalityGeneral text)')
+else:
+    proxy_ind_of_seasonality = np.full((n_proxies),True,dtype=bool)
+    print(' - Seasonality filter off: all '+str(n_proxies)+' records eligible')
 
 # If requested, select only certain archive types
 if options['assimilate_selected_archives']:

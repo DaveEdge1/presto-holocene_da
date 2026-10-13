@@ -112,6 +112,20 @@ def load_proxies(options):
                     print('Fixing GISP2 ages:',all_ts_12k[i]['paleoData_variableName'],', Index:',i)
                     all_ts_12k[i]['age'] = gisp2_ages
             #
+            # Erb et al. (2022) kept only records in the Temp12k compilation
+            # (lipd.filterTs 'paleoData_inCompilation == Temp12k', an exact
+            # match). PReSto drops that test by default, since pools are
+            # selected upstream by criteria; presto_require_compilation
+            # restores it, matching paleoData_inCompilation exactly (one name,
+            # or one of a list separated by commas or semicolons).
+            _req = options.get('presto_require_compilation')
+            if _req:
+                def _in_comp(r):
+                    v = r.get('paleoData_inCompilation')
+                    names = v if isinstance(v, (list, tuple)) else re.split(r'[;,]', str(v))
+                    return str(_req) in [str(n).strip() for n in names]
+                all_ts_12k = [r for r in all_ts_12k if _in_comp(r)]
+                print('presto_require_compilation =', _req, '->', len(all_ts_12k), 'timeseries')
             proxy_ts_temp12k = lipd.filterTs(all_ts_12k,'paleoData_units == degC')
             if options['reconstruction_type'] == 'absolute': proxy_ts_temp12k = lipd.filterTs(proxy_ts_temp12k,'paleoData_datum == abs')
             # Drop records that still lack 'age' (no year axis either, or
@@ -308,13 +322,21 @@ def process_proxies(proxy_ts,collection_all,options):
         proxy_data['resolution_binned'][i,:] = proxy_res_12ka
         #
         # Get proxy metdata
-        missing_uncertainty_value = 3.0  # °C RMSE fallback (→ 9.0 °C² MSE); avoids dropping records the pickle doesn't carry temperature12kUncertainty for
+        # Records without temperature12kUncertainty: PReSto assigns a 3.0 degC
+        # RMSE (9.0 degC^2 MSE) by default, so pool records that never had a
+        # Temp12k uncertainty are kept. presto_missing_uncertainty: null
+        # restores Erb et al. (2022), who set NaN, which drops the record.
+        _mu = options.get('presto_missing_uncertainty', 3.0)
+        missing_uncertainty_value = np.nan if _mu is None or str(_mu).lower() in ('none', 'null', 'nan', 'drop') else float(_mu)
         proxy_lat                 = proxy_ts[i]['geo_meanLat']
         proxy_lon                 = proxy_ts[i]['geo_meanLon']
         _interp = proxy_ts[i].get('paleoData_interpretation', [{}])
         _interp0 = _interp[0] if len(_interp) > 0 else {}
         proxy_seasonality_txt     = _interp0.get('seasonality', 'annual')
-        proxy_seasonality_general = _interp0.get('seasonalityGeneral', 'annual')
+        # Records without seasonalityGeneral (most non-Temp12k pool records)
+        # count as annual for the season filter.
+        proxy_seasonality_general = _interp0.get('seasonalityGeneral') or 'annual'
+        if str(proxy_seasonality_general).lower() in ('nan', 'none', ''): proxy_seasonality_general = 'annual'
         try:    proxy_uncertainty = float(proxy_ts[i]['paleoData_temperature12kUncertainty'])
         except: proxy_uncertainty = missing_uncertainty_value; missing_uncertainty += 1
         proxy_data['archivetype'].append(proxy_ts[i].get('archiveType', 'Unknown'))
@@ -325,20 +347,30 @@ def process_proxies(proxy_ts,collection_all,options):
         if 'seasonality_array' in list(proxy_ts[i].keys()):
             proxy_seasonality_array = proxy_ts[i]['seasonality_array']
         else:
-            # Pre-process seasonality text to handle formats upstream misses
-            proxy_seasonality_txt = _normalize_seasonality(proxy_seasonality_txt)
-            # Check if normalization already produced valid month numbers
-            # (bypasses upstream's broken isinstance check for space-separated ints)
-            _parts = str(proxy_seasonality_txt).split()
-            try:
-                _nums = [int(p) for p in _parts]
-                if len(_nums) > 0 and all(-12 <= n <= 12 and n != 0 for n in _nums):
-                    proxy_seasonality_array = np.array(_nums)
-                else:
-                    raise ValueError
-            except ValueError:
-                proxy_seasonality = da_utils.interpret_seasonality(proxy_seasonality_txt,proxy_lat,unknown_option='annual')
-                proxy_seasonality_array = np.array(proxy_seasonality.split()).astype(int)
+            # Erb et al.'s (2022) lookup table first, so every string it knows
+            # is read as in the published run (for example '11 12 1 2 3 4 5'
+            # as previous-year Nov-Dec). Strings it does not know go through
+            # _normalize_seasonality, then the table's annual fallback.
+            _known = da_utils.interpret_seasonality(proxy_seasonality_txt,proxy_lat,unknown_option='as-is')
+            if isinstance(_known, str) and _known != proxy_seasonality_txt:
+                proxy_seasonality_array = np.array(_known.split()).astype(int)
+            else:
+                proxy_seasonality_array = None
+                _parts = str(_normalize_seasonality(proxy_seasonality_txt)).split()
+                try:
+                    _nums = [int(p) for p in _parts]
+                    if len(_nums) > 0 and all(-12 <= n <= 12 and n != 0 for n in _nums):
+                        # A run that wraps past December starts in the previous
+                        # year: '9 10 11 12 1 2' -> '-9 -10 -11 -12 1 2'.
+                        w = next((k for k in range(1, len(_nums)) if 0 < _nums[k] < _nums[k - 1]), None)
+                        if w is not None and all(n > 0 for n in _nums):
+                            _nums = [-n for n in _nums[:w]] + _nums[w:]
+                        proxy_seasonality_array = np.array(_nums)
+                except ValueError:
+                    pass
+                if proxy_seasonality_array is None:
+                    proxy_seasonality = da_utils.interpret_seasonality(proxy_seasonality_txt,proxy_lat,unknown_option='annual')
+                    proxy_seasonality_array = np.array(proxy_seasonality.split()).astype(int)
         #
         # If requested, prescribe seasonalities
         if options['assign_seasonality'] == 'annual':
